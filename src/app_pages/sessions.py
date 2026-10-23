@@ -12,8 +12,9 @@ page_title("HISTORY / CONVERSATIONS", "历史会话", "保留每段研究和问�
 sessions = repo.list_sessions(user["id"])
 if not sessions:
     st.info("目前没有历史会话。")
+    st.page_link("app_pages/chat.py", label="开始新对话", icon=":material/arrow_forward:")
 for session in sessions:
-    with st.container(border=True):
+    with st.container(border=True, key=f"rag_session_card_{session['id']}"):
         a, b, c = st.columns([4, 1, 1], vertical_alignment="center")
         with a:
             st.markdown(f"**{session['title']}**")

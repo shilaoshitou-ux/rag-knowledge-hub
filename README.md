@@ -6,6 +6,7 @@
 
 ## 项目能做什么
 
+- **产品化界面**：深色侧边导航、响应式工作台、卡片式知识库与带引用的对话区；仪表数据来自当前账号真实状态。
 - **企业 / 论文知识库**：账号隔离；PDF、DOCX、TXT、Markdown、CSV 上传；处理状态、重试、版本更新和索引删除，最大文件 100 MB。
 - **有出处的问答**：向量语义检索 + BM25、RRF 倒数排名融合、可选 LLM 候选重排，引用原文和 PDF 页码。
 - **多轮对话**：同库会话隔离，近期窗口、较早对话摘要、按需 Query Rewrite，SQLite 持久化。
@@ -82,6 +83,7 @@ python -m pip check
 
 ## 目录
 
+- `src/assets/`：品牌 SVG 标识（静态资源）。
 - `src/app_pages/`：工作台、问答、知识库、论文、历史、评测与设置。
 - `src/modules/managed_index.py`：上传队列、索引生命周期。
 - `src/modules/retrieval.py`、`src/modules/paper_evidence.py`：融合检索与论文证据覆盖。

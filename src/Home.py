@@ -1,6 +1,7 @@
 """Incremental entrypoint: managed workspace plus existing legacy utilities."""
 
 import os
+from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from modules.ui_kit import GLOBAL_STYLE
 
 load_dotenv()
 
-st.set_page_config(page_title="智能知识库 · 工作台", page_icon="📚", layout="wide")
+st.set_page_config(page_title="Atlas · 智能知识工作区", page_icon=":material/auto_stories:", layout="wide")
 
 from modules.auth_ui import restore_login
 from modules.repository import Repository
@@ -35,6 +36,9 @@ if os.getenv("RAG_ENABLE_LEGACY", "false").lower() == "true":
         st.Page("pages/2_📊表格分析（可选）.py", title="表格分析", icon=":material/table_chart:", url_path="表格分析"),
         st.Page("pages/3_🎬视频摘要.py", title="视频摘要", icon=":material/video_library:", url_path="视频摘要"),
     ]
+if st.session_state.get("rag_current_user"):
+    assets = Path(__file__).with_name("assets")
+    st.logo(str(assets / "atlas-logo.svg"), icon_image=str(assets / "atlas-mark.svg"), size="large")
 navigation = st.navigation(pages, expanded=False)
 st.html(GLOBAL_STYLE)
 if not st.session_state.get("rag_current_user"):

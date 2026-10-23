@@ -1,4 +1,4 @@
-﻿"""Account-scoped workspace: all figures come from the SQLite repository."""
+"""Account-scoped workspace; figures and recent activity come from SQLite."""
 
 from pathlib import Path
 
@@ -6,63 +6,70 @@ import streamlit as st
 
 from modules.auth_ui import require_user
 from modules.repository import Repository
-from modules.ui_kit import empty, hero, metric
+from modules.ui_kit import empty, feature_intro, hero, metric, section_heading
 
 repo = Repository()
 user = require_user(repo)
-metrics = repo.stats(user["id"])
-hero("YOUR KNOWLEDGE, IN ONE PLACE", f"欢迎回来，{user['username']}",
-     "从资料管理到可追溯的智能问答，把企业知识与论文研究放在清晰、有序的工作区。")
-st.space("small")
-for column, label, value, note in zip(
-    st.columns(3, gap="medium"),
-    ("知识库", "已上传文档", "历史会话"),
-    (metrics["bases"], metrics["uploads"], metrics["conversations"]),
-    ("企业与论文分库管理", f"其中 {metrics['documents']} 份处理成功", "重启服务后仍可继续"),
-):
+counts = repo.stats(user["id"])
+hero("ATLAS / 工作台", f"欢迎回来，{user['username']}",
+     "你的知识、论文和对话汇聚于此。找到需要的资料，然后从原文证据出发继续探索。")
+
+stat_items = (
+    ("知识库", counts["bases"], "企业与论文独立管理", "folder_open"),
+    ("已上传文档", counts["uploads"], f"{counts['documents']} 份处理成功", "description"),
+    ("历史会话", counts["conversations"], "讨论与引用可随时找回", "forum"),
+)
+for column, (label, value, note, icon) in zip(st.columns(3, gap="medium"), stat_items):
     with column:
-        metric(label, value, note)
-if metrics["uploads"] == 0:
+        metric(label, value, note, icon)
+
+section_heading("继续你的工作", "选择一个入口，立刻开始")
+features = (
+    ("整理知识", "创建独立空间、上传资料，并掌握每份文件的处理进度。",
+     "folder_open", "app_pages/knowledge.py", "管理知识库"),
+    ("基于证据提问", "检索可信片段，在同一会话中逐步追问并核对来源。",
+     "forum", "app_pages/chat.py", "开始问答"),
+    ("读懂论文", "定位作者方法、关键实验与局限，比较不同论文。",
+     "menu_book", "app_pages/papers.py", "打开论文工作区"),
+)
+for index, (title, detail, icon, target, action) in enumerate(features):
+    if index % 3 == 0:
+        columns = st.columns(3, gap="medium")
+    with columns[index % 3]:
+        with st.container(border=True, key=f"rag_feature_{index}"):
+            feature_intro(title, detail, icon)
+            st.page_link(target, label=action, icon=":material/arrow_outward:", width="stretch")
+
+if counts["uploads"] == 0:
+    st.space("small")
     with st.container(border=True):
-        st.markdown("#### 第一次试用？从一份无敏感内容的样例开始")
-        st.caption("① 创建企业知识库  →  ② 上传下面的 TXT  →  ③ 等待“处理成功”  →  ④ 在问答页提问：谁是项目负责人？")
+        st.markdown("**第一次使用？用一份合成样例体验流程**")
+        st.caption("创建企业知识库 → 上传 TXT → 等待处理成功 → 提问“谁是项目负责人？”")
         sample = Path(__file__).resolve().parents[2] / "examples" / "rag-demo.txt"
         if sample.is_file():
             st.download_button("下载样例 TXT", sample.read_bytes(), file_name="rag-demo.txt",
                                mime="text/plain", icon=":material/download:")
+
 st.space("small")
-st.subheader("从这里开始", anchor=False)
-for column, title, detail, path, label, icon in zip(
-    st.columns(3, gap="medium"),
-    ("整理你的知识", "开始一次对话", "深读学术论文"),
-    ("创建独立知识库，上传资料并追踪处理。", "选定知识库，根据原文证据获得回答。", "总结方法与结果，按篇核对论文来源。"),
-    ("app_pages/knowledge.py", "app_pages/chat.py", "app_pages/papers.py"),
-    ("进入知识库", "进入智能问答", "进入论文分析"),
-    (":material/folder_open:", ":material/forum:", ":material/menu_book:"),
-):
-    with column, st.container(border=True):
-        st.markdown(f"#### {title}")
-        st.caption(detail)
-        st.page_link(path, label=label, icon=icon, width="stretch")
-st.space("small")
-left, right = st.columns(2, gap="large")
-with left:
-    st.subheader("最近知识库", anchor=False)
-    bases = repo.list_bases(user["id"])[:5]
+recent_bases, recent_sessions = st.columns(2, gap="large")
+with recent_bases:
+    section_heading("最近知识库", "RECENT COLLECTIONS")
+    bases = repo.list_bases(user["id"])[:4]
     if not bases:
-        empty("还没有知识库", "先创建企业库或论文库，再上传第一份资料。")
+        empty("还没有知识库", "创建企业库或论文库，随后上传你的第一份资料。")
     for item in bases:
-        with st.container(border=True):
-            a, b = st.columns([3, 1], vertical_alignment="center")
-            a.markdown(f"**{item['name']}**")
-            b.caption("论文" if item["kind"] == "paper" else "企业")
-            st.caption(f"{item['document_count']} 份可检索文档 · {item['updated_at'][:10]}")
-with right:
-    st.subheader("最近会话", anchor=False)
-    conversations = repo.list_sessions(user["id"])[:5]
-    if not conversations:
-        empty("还没有会话", "上传文档并完成处理后，即可发起可追溯的问答。")
-    for item in conversations:
-        with st.container(border=True):
+        with st.container(border=True, key=f"rag_recent_kb_{item['id']}"):
+            name, tag = st.columns([4, 1], vertical_alignment="center")
+            name.markdown(f"**{item['name']}**")
+            tag.badge("论文" if item["kind"] == "paper" else "企业",
+                      color="violet" if item["kind"] == "paper" else "blue")
+            st.caption(f"{item['document_count']} 份可检索文档 · 更新于 {item['updated_at'][:10]}")
+with recent_sessions:
+    section_heading("最近会话", "RECENT ACTIVITY")
+    sessions = repo.list_sessions(user["id"])[:4]
+    if not sessions:
+        empty("还没有会话", "上传资料并完成处理后，就能开启带引用的问答。")
+    for item in sessions:
+        with st.container(border=True, key=f"rag_recent_session_{item['id']}"):
             st.markdown(f"**{item['title']}**")
-            st.caption(f"{item['kb_name']} · {item['updated_at'][:16].replace('T',' ')}")
+            st.caption(f"{item['kb_name']} · {item['updated_at'][:16].replace('T', ' ')}")

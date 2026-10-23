@@ -11,6 +11,10 @@ repo = Repository()
 user = require_user(repo)
 page_title("ACCOUNT / SETTINGS", "系统设置", f"当前账号：{user['username']}。在这里了解本机数据与模型连接方式。")
 render_model_settings(user["id"])
+with st.container(border=True, key="rag_settings_guide"):
+    st.markdown("**模型连接**")
+    st.write("请从左侧展开“模型连接与密钥”，选择服务地址、问答模型和向量模型。")
+    st.caption("密钥保存后不会再次明文显示；刷新后可继续使用该账号已保存的密钥。")
 with st.container(border=True):
     st.subheader("本机数据")
     st.code(str(repo.path), language=None)

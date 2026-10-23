@@ -80,9 +80,9 @@ def require_user(repo: Repository) -> dict:
         st.title("登录工作区", anchor=False)
         st.write("继续你的知识整理与探索。")
         st.space("small")
-        with st.container(border=True):
+        with st.container(key="rag_login_form"):
             mode = st.segmented_control("账号操作", ["登录", "注册"], default="登录", key="rag_auth_mode")
-            with st.form("rag_auth_form", clear_on_submit=True):
+            with st.form("rag_auth_form", clear_on_submit=True, border=False):
                 username = st.text_input("用户名", key="rag_auth_name", placeholder="输入用户名（支持中文）")
                 password = st.text_input("密码", type="password", key="rag_auth_password", placeholder="至少 10 位")
                 remember = st.checkbox(f"在这台浏览器保持登录 {remember_days()} 天", value=True, key="rag_remember") if mode == "登录" else False

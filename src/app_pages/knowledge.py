@@ -12,11 +12,11 @@ from modules.ui_kit import empty, page_title
 repo = Repository()
 user = require_user(repo)
 settings = render_model_settings(user["id"])
-page_title("LIBRARY / KNOWLEDGE BASES", "我的知识库", "把企业资料和学术论文放进独立空间；每次问答都能回到原始文档。")
+page_title("ATLAS / 知识空间", "我的知识库", "分门别类整理资料，查看处理进度，让每个答案都能返回原始证据。")
 bases = repo.list_bases(user["id"])
 with st.expander("创建新知识库", expanded=not bases, icon=":material/add_circle:"):
     st.caption("向量模型在创建时绑定到知识库，避免不同维度的索引混用。")
-    with st.form("new_base"):
+    with st.form("new_base", border=False):
         name = st.text_input("知识库名称", placeholder="例如：研发技术规范 / 论文精读")
         kind = st.selectbox("知识库类型", ["企业知识库", "学术论文库"])
         description = st.text_area("描述（可选）", height=75)
@@ -41,14 +41,17 @@ st.space("small")
 filter_kind = st.segmented_control("按类型查看", ["全部", "企业知识库", "学术论文库"], default="全部")
 shown = [kb for kb in bases if filter_kind == "全部" or
          kb["kind"] == ("paper" if filter_kind == "学术论文库" else "enterprise")]
+st.caption(f"已找到 {len(shown)} 个知识库 · 企业资料与论文互不混用")
 if not shown:
     empty("还没有符合条件的知识库", "点开上方“创建新知识库”，开始上传和整理资料。")
 for index, item in enumerate(shown):
     if index % 2 == 0:
         row = st.columns(2, gap="medium")
     with row[index % 2]:
-        with st.container(border=True):
-            st.caption("RESEARCH COLLECTION" if item["kind"] == "paper" else "TEAM KNOWLEDGE")
+        with st.container(border=True, key=f"rag_kb_card_{item['id']}"):
+            st.html("<div class='rag-kb-head'><i class='rag-kb-dot paper'></i>论文研究</div>"
+                    if item["kind"] == "paper"
+                    else "<div class='rag-kb-head'><i class='rag-kb-dot'></i>企业知识</div>")
             st.subheader(item["name"], anchor=False)
             st.write(item["description"] or "为这组资料建立可检索、可追溯的知识空间。")
             st.caption(f"{'论文' if item['kind']=='paper' else '企业资料'} · {item['document_count']} 份可检索文档 · 更新于 {item['updated_at'][:10]}")
@@ -63,8 +66,8 @@ for index, item in enumerate(shown):
 active_id = st.session_state.get("rag_managed_kb")
 item = next((kb for kb in bases if kb["id"] == active_id), None)
 if item:
-    st.divider()
-    page_title("COLLECTION / MANAGE", item["name"], "在这里上传、更新或删除资料；正在处理的文档会显示实时状态。")
+    st.space("small")
+    page_title("COLLECTION / 管理资料", item["name"], "在这里上传、更新或删除资料；正在处理的文档会显示实时状态。")
     same_endpoint = settings.base_url == item["base_url"]
     documents_tab, settings_tab, danger_tab = st.tabs(["资料与处理状态", "知识库设置", "删除知识库"])
     with documents_tab:
@@ -123,7 +126,9 @@ if item:
                 with st.container(border=True):
                     title, action = st.columns([4, 1], vertical_alignment="center")
                     title.markdown(f"**{doc['name']}** · v{doc['version']}")
-                    action.caption(status_label.get(doc["status"], doc["status"]))
+                    action.badge(status_label.get(doc["status"], doc["status"]),
+                                 color={"waiting": "gray", "processing": "blue",
+                                        "success": "green", "failed": "red"}.get(doc["status"], "gray"))
                     st.caption(f"{doc['chunk_count']} 个片段 · {doc['bytes']/1024:.1f} KB · {doc['updated_at'][:16].replace('T',' ')}")
                     if doc["error"]:
                         st.warning(doc["error"])

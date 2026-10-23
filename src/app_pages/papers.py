@@ -17,6 +17,7 @@ page_title("RESEARCH / PAPER WORKSPACE", "论文智能分析", "让论文阅读�
 paper_bases = [kb for kb in repo.list_bases(user["id"]) if kb["kind"] == "paper"]
 if not paper_bases:
     st.info("还没有论文知识库，请到“我的知识库”创建并上传论文。")
+    st.page_link("app_pages/knowledge.py", label="创建论文知识库", icon=":material/arrow_forward:")
     st.stop()
 kb_id = st.selectbox("论文知识库", [kb["id"] for kb in paper_bases],
                      format_func=lambda value: next(kb["name"] for kb in paper_bases if kb["id"] == value))
@@ -24,6 +25,7 @@ kb = repo.get_base(user["id"], kb_id)
 docs = [doc for doc in repo.list_documents(user["id"], kb_id) if doc["status"] == "success"]
 if not docs:
     st.info("此库还没有处理成功的论文。请先上传并等待处理完成。")
+    st.page_link("app_pages/knowledge.py", label="前往上传论文", icon=":material/arrow_forward:")
     st.stop()
 if settings.base_url != kb["base_url"]:
     st.warning("请在侧栏切换到创建论文库时使用的模型接口。")
@@ -32,40 +34,41 @@ if not settings.api_key:
 ready = bool(settings.api_key and settings.chat_model and settings.base_url == kb["base_url"])
 doc_by_id = {doc["id"]: doc for doc in docs}
 st.caption(f"可用论文：{len(docs)} 篇 · 当前库向量模型：{kb['embedding_model']}")
-mode = st.segmented_control("研读方式", ["单篇精读", "多篇对比"], default="单篇精读")
-if mode == "单篇精读":
-    selected = st.selectbox("选择论文", list(doc_by_id), format_func=lambda value: doc_by_id[value]["name"])
-    task = st.selectbox("研读任务", READING_TASKS, format_func=lambda item: item.title)
-    st.caption(task.description)
-    custom = st.text_area("提问内容（可修改）", value=task.question, height=110, key=f"paper_question_{task.slug}")
-    if st.button("开始分析", type="primary", icon=task.icon, disabled=not ready or not custom.strip()):
-        with st.status("正在检索论文证据并分析…", expanded=False):
-            try:
-                result = run_paper_task(repo, user["id"], kb, selected,
-                                        settings.api_key, settings.chat_model, custom, task.search_queries)
-                st.session_state["paper_result"] = (user["id"], kb_id, [result])
-            except Exception as exc:
-                # Remote errors can echo credentials or document text.
-                st.error(f"分析失败（{type(exc).__name__}），请检查服务、索引和日志。")
-else:
-    selected_ids = st.multiselect("选择 2–5 篇论文", list(doc_by_id),
-                                  format_func=lambda value: doc_by_id[value]["name"], max_selections=5)
-    st.caption("分别检索每篇论文的背景、方法、创新、实验与局限；逐篇显示结构化报告和独立来源，避免混淆论文证据。")
-    if st.button("生成对比报告", type="primary", icon=":material/compare_arrows:",
-                 disabled=not ready or len(selected_ids) < 2):
-        with st.status("逐篇检索、分析与核对来源…", expanded=False):
-            try:
-                results = run_comparison(repo, user["id"], kb, selected_ids,
-                                         settings.api_key, settings.chat_model)
-                st.session_state["paper_result"] = (user["id"], kb_id, results)
+with st.container(border=True, key="rag_paper_controls"):
+    mode = st.segmented_control("研读方式", ["单篇精读", "多篇对比"], default="单篇精读")
+    if mode == "单篇精读":
+        selected = st.selectbox("选择论文", list(doc_by_id), format_func=lambda value: doc_by_id[value]["name"])
+        task = st.selectbox("研读任务", READING_TASKS, format_func=lambda item: item.title)
+        st.caption(task.description)
+        custom = st.text_area("提问内容（可修改）", value=task.question, height=110, key=f"paper_question_{task.slug}")
+        if st.button("开始分析", type="primary", icon=task.icon, disabled=not ready or not custom.strip()):
+            with st.status("正在检索论文证据并分析…", expanded=False):
                 try:
-                    comparison = synthesize_comparison(results, settings.api_key, settings.chat_model, kb["base_url"])
-                    st.session_state["paper_synthesis"] = (user["id"], kb_id, comparison)
+                    result = run_paper_task(repo, user["id"], kb, selected,
+                                            settings.api_key, settings.chat_model, custom, task.search_queries)
+                    st.session_state["paper_result"] = (user["id"], kb_id, [result])
                 except Exception as exc:
-                    st.session_state.pop("paper_synthesis", None)
-                    st.warning(f"逐篇分析完成，但综合对比未生成（{type(exc).__name__}）；可在下方分别核对报告。")
-            except Exception as exc:
-                st.error(f"对比未完成（{type(exc).__name__}）；已完成的单篇记录仍在历史会话中。")
+                    # Remote errors can echo credentials or document text.
+                    st.error(f"分析失败（{type(exc).__name__}），请检查服务、索引和日志。")
+    else:
+        selected_ids = st.multiselect("选择 2–5 篇论文", list(doc_by_id),
+                                      format_func=lambda value: doc_by_id[value]["name"], max_selections=5)
+        st.caption("分别检索每篇论文的背景、方法、创新、实验与局限；逐篇显示结构化报告和独立来源，避免混淆论文证据。")
+        if st.button("生成对比报告", type="primary", icon=":material/compare_arrows:",
+                     disabled=not ready or len(selected_ids) < 2):
+            with st.status("逐篇检索、分析与核对来源…", expanded=False):
+                try:
+                    results = run_comparison(repo, user["id"], kb, selected_ids,
+                                             settings.api_key, settings.chat_model)
+                    st.session_state["paper_result"] = (user["id"], kb_id, results)
+                    try:
+                        comparison = synthesize_comparison(results, settings.api_key, settings.chat_model, kb["base_url"])
+                        st.session_state["paper_synthesis"] = (user["id"], kb_id, comparison)
+                    except Exception as exc:
+                        st.session_state.pop("paper_synthesis", None)
+                        st.warning(f"逐篇分析完成，但综合对比未生成（{type(exc).__name__}）；可在下方分别核对报告。")
+                except Exception as exc:
+                    st.error(f"对比未完成（{type(exc).__name__}）；已完成的单篇记录仍在历史会话中。")
 
 saved = st.session_state.get("paper_result")
 if saved and saved[0] == user["id"] and saved[1] == kb_id:
