@@ -1,0 +1,23 @@
+# Reference Blueprint only; review current Render pricing before provisioning.
+# A persistent disk and Starter instance may be billable.
+services:
+  - type: web
+    name: rag-knowledge-hub
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: RAG_DATA_DIR
+        value: /app/data
+      - key: RAG_ENABLE_LEGACY
+        value: "false"
+      - key: PORT
+        value: "8507"
+      # Set RAG_PUBLIC_ORIGIN in the dashboard after Render assigns the HTTPS URL.
+      # Never place API keys in this file.
+    disk:
+      name: rag-data
+      mountPath: /app/data
+      sizeGB: 1

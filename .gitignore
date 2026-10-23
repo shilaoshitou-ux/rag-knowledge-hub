@@ -1,0 +1,28 @@
+# Runtime secrets and credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Uploaded documents, SQLite metadata, vector indexes and old private indexes
+/data/
+/embeddings/
+*.sqlite3
+*.sqlite3-*
+
+# Python and local tooling
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.idea/
+.vscode/
+
+# Locally exported evaluation results (not the safe checked-in sample)
+rag-evaluation.json

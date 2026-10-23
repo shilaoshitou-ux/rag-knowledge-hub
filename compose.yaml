@@ -1,0 +1,13 @@
+services:
+  rag:
+    build: .
+    ports:
+      - "127.0.0.1:8507:8507"
+    environment:
+      RAG_DATA_DIR: /app/data
+      RAG_ENABLE_LEGACY: "false"
+    volumes:
+      - rag_data:/app/data
+    restart: unless-stopped
+volumes:
+  rag_data:

@@ -1,0 +1,17 @@
+[
+  {
+    "question": "星河演示项目的负责人是谁？",
+    "relevant_documents": ["rag-demo.txt"],
+    "expected_answer": "林晓"
+  },
+  {
+    "question": "星河演示项目计划什么时候上线？",
+    "relevant_documents": ["rag-demo.txt"],
+    "expected_answer": "2026年12月15日"
+  },
+  {
+    "question": "这个项目的目标是什么？",
+    "relevant_documents": ["rag-demo.txt"],
+    "expected_answer": "内部知识库"
+  }
+]

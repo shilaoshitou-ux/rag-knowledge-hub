@@ -1,0 +1,32 @@
+[theme]
+base = "light"
+primaryColor = "#3954BC"
+backgroundColor = "#F7F8FC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#222B40"
+font = "sans serif"
+headingFont = "sans serif"
+baseFontSize = 15
+baseRadius = "10px"
+buttonRadius = "10px"
+showWidgetBorder = true
+showSidebarBorder = true
+paddingTop = "1.15rem"
+paddingBottom = "2rem"
+
+[theme.sidebar]
+backgroundColor = "#EFF2FA"
+secondaryBackgroundColor = "#FFFFFF"
+paddingTop = "0.75rem"
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+address = "127.0.0.1"
+port = 8507
+headless = true
+runOnSave = true
+fileWatcherType = "poll"
+showEmailPrompt = false
+maxUploadSize = 100
