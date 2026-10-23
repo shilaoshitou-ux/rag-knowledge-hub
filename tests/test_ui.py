@@ -117,6 +117,7 @@ class DocumentPageTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.text_input[1].value, "")
 
+    @unittest.skipUnless(os.name == "nt", "DPAPI save button is Windows-only")
     def test_explicit_save_survives_new_browser_session_and_delete(self):
         saved = {}
         self.store.load.side_effect = lambda scope: saved.get(scope)
