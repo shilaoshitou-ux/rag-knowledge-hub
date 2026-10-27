@@ -35,9 +35,9 @@ with create:
 with st.sidebar.expander("检索与对话偏好", expanded=False, icon=":material/tune:"):
     mode_label = st.selectbox("检索策略", ["BM25 + 向量融合", "纯向量", "融合 + 模型重排"], key="rag_search_mode")
     mode = {"BM25 + 向量融合": "hybrid", "纯向量": "vector", "融合 + 模型重排": "rerank"}[mode_label]
-    top_k = st.slider("引用片段数", 1, 8, 6, key="rag_top_k")
+    top_k = st.slider("引用片段数", 1, 12, 6, key="rag_top_k")
     history_turns = st.slider("近期对话轮数", 2, 20, 8, key="rag_history_turns")
-    st.caption("模型重排会产生额外请求。")
+    st.caption("宽泛总结默认覆盖至少 10 条证据；选 1–5 条可精简。证据越多，耗时和模型费用可能越高。模型重排另需一次请求。")
 with st.sidebar.expander("最近会话", expanded=True, icon=":material/history:"):
     sessions = repo.list_sessions(user["id"], kb_id)[:10]
     if not sessions:

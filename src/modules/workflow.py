@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
-from .chatbot import Chatbot, ChatResult
+from .chatbot import Chatbot, ChatResult, overview_search_queries
 from .repository import Repository
 from .retrieval import HybridRetriever
 
@@ -90,9 +90,14 @@ def stream_answer_turn(repo: Repository, owner: str, kb: dict, sid: str, questio
     pairs = [(messages[i]["content"], messages[i+1]["content"])
              for i in range(0, len(messages)-1, 2)
              if messages[i]["role"] == "user" and messages[i+1]["role"] == "assistant"][-window:]
+    extra_queries = overview_search_queries(question)
+    # The default six excerpts are too few for dispersed project evidence. Respect a
+    # deliberately small user setting, and never change a specific factual question.
+    evidence_k = min(12, max(top_k, 10)) if extra_queries and top_k >= 6 else top_k
     retriever = HybridRetriever(repo, owner, kb, api_key, chat_model, mode)
-    bot = Chatbot(chat_model, retriever, api_key, top_k, base_url=kb["base_url"], history_turns=window)
-    state = {"question": question.strip(), "history": pairs, "summary": summary, "search_queries": ()}
+    bot = Chatbot(chat_model, retriever, api_key, evidence_k, base_url=kb["base_url"], history_turns=window)
+    state = {"question": question.strip(), "history": pairs, "summary": summary,
+             "search_queries": extra_queries}
     documents: list[Document] = []
     answer = None
     streamed = ""
@@ -144,11 +149,13 @@ def answer_turn(repo: Repository, owner: str, kb: dict, sid: str, question: str,
     pairs = [(messages[i]["content"], messages[i+1]["content"])
              for i in range(0, len(messages)-1, 2)
              if messages[i]["role"] == "user" and messages[i+1]["role"] == "assistant"][-window:]
+    extra_queries = tuple(search_queries) or overview_search_queries(question)
+    evidence_k = min(12, max(top_k, 10)) if extra_queries and not search_queries and top_k >= 6 else top_k
     retriever = HybridRetriever(repo, owner, kb, api_key, chat_model, mode, document_ids)
-    bot = Chatbot(chat_model, retriever, api_key, top_k, base_url=kb["base_url"], history_turns=window)
+    bot = Chatbot(chat_model, retriever, api_key, evidence_k, base_url=kb["base_url"], history_turns=window)
     state = make_graph(bot).invoke({
         "question": question.strip(), "history": pairs, "summary": summary,
-        "search_queries": tuple(search_queries),
+        "search_queries": extra_queries,
     })
     documents = state["documents"]
     result = ChatResult(state["answer"], documents)

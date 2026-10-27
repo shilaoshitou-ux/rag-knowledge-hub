@@ -26,6 +26,23 @@ def needs_rewrite(question: str) -> bool:
                          question.strip(), re.IGNORECASE))
 
 
+def overview_search_queries(question: str) -> tuple[str, ...]:
+    """Expand broad summaries into bounded evidence angles, without rewriting specific questions."""
+    text = question.strip()
+    overview = re.search(r"总结|梳理|概述|回顾|归纳|全面介绍|做了(什么|哪些)", text)
+    scope = re.search(r"工作|项目|经历|论文|文档|资料|知识库|问题|成果|研究|这篇|这份|整体|全部|主要", text)
+    narrow = re.search(r"缺点|优点|区别|差异|对比|年假|多少钱|是否|多少|几天|哪一页", text)
+    if not (overview and scope) or narrow:
+        return ()
+    # Keep the user's named subject (e.g. an explicitly named project); these are retrieval hints, not facts.
+    subject = re.sub(r"(请|帮我|你给我|给我|一下|详细|全面|总结|梳理|概述|回顾|归纳|介绍|一下子)", " ", text)
+    subject = re.sub(r"\s+", " ", subject).strip(" ，。？?！!：:") or text
+    return tuple(f"{subject} {angle}" for angle in (
+        "背景 目标 需求 原因", "具体工作 解决方案 实施步骤 排查过程",
+        "验证 测试 效果 结果 不足",
+    ))
+
+
 REWRITE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "根据同一知识库内的近期对话和摘要判断问题是否依赖上下文。"
                "若是独立新话题，原样返回；若有代词或省略，将其改写为独立、可检索的问题。"
@@ -43,6 +60,12 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
                "不要用参考文献或作者署名/分工代替方法证据。只说明检索片段确实支持的内容，缺失部分才写无法确认。"
                "若存在多篇论文且用户未指定目标，不要把不同论文的方法混成一篇；先说明歧义并请用户指定论文。"
                "每项可核查的事实应引用本次提供的来源编号 [1]；不要引用未提供的编号。"
+               "对于总结工作、项目或文档的宽泛问题，在证据足够时尽量全面：先概括范围，"
+               "再按背景/目标、实际问题、本人明确承担的工作与处理步骤、验证方法与结果、局限分段说明；"
+               "只写相关且有原文支持的维度，结合多个不同片段的具体信息，而不是只罗列标题或重复同一事实。"
+               "明确区分团队成果和用户本人贡献；不要从标题推断原因、步骤、指标或个人职责。"
+               "文档未提及的关键维度简短说明缺乏依据，不要为了凑篇幅重复无据声明。"
+               "对于单点事实问题直接回答，不强行套用上述结构。"
                "历史摘要只用于理解指代，不能当作证据；优先使用中文。\n"
                "较早对话摘要（非证据）：{summary}\n检索片段：\n{context}"),
     MessagesPlaceholder("chat_history"),
@@ -82,16 +105,25 @@ class Chatbot:
         queries = tuple(dict.fromkeys([query.strip(), *(q.strip() for q in search_queries if q.strip())]))
         if len(queries) == 1:
             return self.vectors.similarity_search(queries[0], k=self.top_k)
-        per_query = max(2, (self.top_k + len(queries) - 1) // len(queries))
-        buckets = [self.vectors.similarity_search(q, k=per_query) for q in queries]
+        # Broader summaries reserve more original-query hits while leaving the
+        # existing small-budget paper reading tasks unchanged.
+        if self.top_k >= 10:
+            per_query = min(8, max(3, (self.top_k * 2 + len(queries) - 1) // len(queries)))
+            buckets = [self.vectors.similarity_search(q, k=self.top_k if i == 0 else per_query)
+                       for i, q in enumerate(queries)]
+        else:
+            per_query = max(2, (self.top_k + len(queries) - 1) // len(queries))
+            buckets = [self.vectors.similarity_search(q, k=per_query) for q in queries]
         documents: list[Document] = []
         seen: set[tuple] = set()
-        for row in range(per_query):
+        for row in range(max(map(len, buckets), default=0)):
             for bucket in buckets:
                 if row >= len(bucket):
                     continue
                 doc = bucket[row]
-                identity = (doc.metadata.get("source"), doc.metadata.get("location"), doc.page_content)
+                identity = (doc.metadata.get("chunk_id") or (
+                    doc.metadata.get("document_id"), doc.metadata.get("version"),
+                    doc.metadata.get("source"), doc.metadata.get("location"), doc.page_content))
                 if identity not in seen:
                     documents.append(doc)
                     seen.add(identity)

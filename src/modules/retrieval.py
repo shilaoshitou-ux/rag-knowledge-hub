@@ -117,7 +117,7 @@ class HybridRetriever:
         else:
             keyword = bm25(keyword_query(query) if self.kb["kind"] == "paper" else query,
                            rows, limit=max(k*3, 12))
-            candidates = rrf_merge([semantic, keyword], limit=min(max(k*2, 8), 12))
+            candidates = rrf_merge([semantic, keyword], limit=min(max(k*2, 8), 20))
             coverage = (section_evidence(query, rows, min(k, 5))
                         if self.kb["kind"] == "paper" and paper_intents(query) else [])
             if self.mode == "rerank" and candidates:
