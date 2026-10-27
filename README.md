@@ -4,6 +4,12 @@
 
 ![Tests](https://github.com/shilaoshitou-ux/rag-knowledge-hub/actions/workflows/ci.yml/badge.svg)
 
+## 界面预览
+
+以下图片来自**隔离的合成演示账号**，未使用个人论文、真实账号或 API Key；截图中的 0 个文档、0 次模型回答是实际页面状态，不代表模型效果。
+
+![Atlas 工作台：真实计数、知识库入口和论文入口](docs/images/workbench.jpg)
+
 ## 项目能做什么
 
 - **产品化界面**：深色侧边导航、响应式工作台、卡片式知识库与带引用的对话区；仪表数据来自当前账号真实状态。
@@ -14,6 +20,86 @@
 - **效果评测**：使用自己标注的 JSON 问题集，实际比较纯向量、混合检索和重排模式的文档级 Recall@K、MRR 与耗时。
 
 **不是通用自主 Agent**：LangGraph 负责“改写 → 检索 → 回答”工作流。没有训练新模型、没有生产级多租户审计、没有 MySQL/Redis/Celery。当前增量输出由 Streamlit 连接承载，并非 HTTP SSE。
+
+## 从零开始使用
+
+### 1. 下载并启动
+
+需要 **Python 3.11+** 和 Git。克隆到自己的电脑后，在项目根目录执行：
+
+```bash
+git clone https://github.com/shilaoshitou-ux/rag-knowledge-hub.git
+cd rag-knowledge-hub
+python -m venv .venv
+```
+
+**Windows PowerShell**：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\start-rag.ps1
+```
+
+**Linux / macOS**：
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m streamlit run src/asgi_app.py --server.address=127.0.0.1 --server.port=8507
+```
+
+看到服务启动后，在**运行它的电脑**打开 <http://localhost:8507/>。不要直接运行 `src/Home.py`：`src/asgi_app.py` 才包含刷新后保持登录所需的认证路由。停止终端进程也会停止网页服务。首次启动会创建自己的空数据库；GitHub 不包含任何用户账号、PDF、向量索引或密钥。
+
+### 2. 注册自己的账号
+
+登录页切换到「注册」，填写用户名和至少 10 位密码，创建后切回「登录」。截图中的 `atlas_demo` 仅存在于隔离的截图测试库，**不是仓库预设账号**。
+
+![登录页面：先注册，再登录](docs/images/login.jpg)
+
+### 3. 配置聊天模型与向量模型
+
+登录后展开左侧「**模型连接与密钥**」：
+
+1. 选择「默认服务」「OpenAI」或「自定义接口」；自定义地址应是你**可以访问**的 OpenAI 兼容 HTTPS Base URL。
+2. 选择有权限的**问答模型**；目录只是候选，实际可用性取决于你的服务和 Key。
+3. 选择「在线 API」或「本地 Ollama」向量化，并选择对应的**向量模型**。在线向量化也需要当前接口的有效 Key。
+4. 填入你自己的 API Key。企业网关若只在内网可访问，外部电脑或云服务器可能无法连通；可以换成自己有权限的模型服务。
+
+**密钥不会放进 GitHub。**Windows 的「保存到本机」使用当前 Windows 用户的 DPAPI；Linux / Docker 上不能使用此保存方式，可在当前会话临时输入，刷新或重启后可能需要重新输入。公开实例不要输入未经授权的公司 Key。若选择本地 Ollama 向量化，还需安装 `requirements-local.txt`、在运行应用的电脑启动 Ollama 并准备对应向量模型；聊天问答仍需可用的聊天模型服务。
+
+### 4. 创建知识库并上传文档
+
+进入「**我的知识库**」→「创建新知识库」，按用途选「企业知识库」或「学术论文库」，填写名称后创建。向量模型和服务地址会绑定到该库；后续处理和问答请使用与建库时相同的接口。两个类型的资料分别管理，不会混入同一次检索。
+
+![知识库页面：企业资料与论文分别管理](docs/images/knowledge-bases.jpg)
+
+在目标卡片点「**管理资料**」→「**选择文件**」；等上传框显示文件名与大小，再点「**上传并处理**」。**只选中文件不等于已上传处理。**支持 PDF、DOCX、TXT、Markdown、CSV，单文件上限 100 MB；扫描版 PDF 需要先 OCR。状态会显示「等待处理 / 处理中 / 处理成功 / 处理失败」，失败可在文档列表查看错误并重试；**只有处理成功才可用于检索问答**。
+
+![文档上传入口：选择文件后仍需点击“上传并处理”](docs/images/upload-workspace.jpg)
+
+> 本图刻意未填测试 Key，因此页面显示「尚未检测到 API 密钥」；这不是一次上传成功的截图。你可以先用仓库里的**合成**文件 [`examples/rag-demo.txt`](examples/rag-demo.txt) 试跑，不要将私人文档提交到仓库。
+
+### 5. 基于文档提问与核对来源
+
+进入「**AI 智能问答**」，选择刚处理成功的知识库，点「**新建会话**」并输入问题。合成示例可问「项目负责人是谁？」。回答生成后展开「**查看引用来源**」，点击引用核对原文、片段和可用的 PDF 页码；历史会话可继续讨论。左侧「检索与对话偏好」可切换纯向量、BM25 + 向量融合或模型重排（重排可能增加调用费用）。
+
+![问答入口：选择知识库并新建会话](docs/images/chat-workspace.jpg)
+
+> 本图是未配置 Key、未上传文档时的真实空状态，**没有伪造模型回答**。要完成一次真实问答，必须先让文档处理成功，并使用支持问答和向量化的模型服务。
+
+### 6. 论文分析与效果评测
+
+- **论文智能分析**：先创建「学术论文库」并上传 PDF，处理成功后到「论文智能分析」选择库和论文，可进行单篇精读或 2–5 篇论文对比；结果应结合引用原文复核。
+- **RAG 效果评测**：先处理好文档，再按 [`examples/eval-demo.json`](examples/eval-demo.json) 准备问题集，在「RAG 效果评测」上传 JSON，实际运行三种检索方案并查看 Recall@K、MRR、耗时等指标。合成问题集只是格式示例，不是预先计算好的成绩。
+
+### 常见问题
+
+| 现象 | 先检查什么 |
+| --- | --- |
+| 打不开 `localhost:8507` | 启动命令是否仍在运行、8507 是否被其他程序占用；这个地址只在运行项目的电脑上有效。 |
+| 刷新后需要重新登录 | 是否从 `src/asgi_app.py` 启动；是否允许 Cookie；公网 HTTPS 反向代理需正确设置 `RAG_PUBLIC_ORIGIN`。 |
+| 点「上传并处理」后没有可问答文档 | 看「已上传文档」中的等待、处理或失败状态；检查 Key、向量模型权限、网络和建库时绑定的服务地址。 |
+| Key 保存按钮不可用 | DPAPI 保存仅支持 Windows；Linux / Docker 请按会话临时输入，不要将 Key 提交到 GitHub。 |
+| PDF 处理成功但提取不到内容 | 确认是不是扫描版 PDF；目前没有内置 OCR，需要先转为可提取文本。 |
 
 ## 架构
 
@@ -32,34 +118,6 @@ flowchart LR
 ```
 
 `RRF`（Reciprocal Rank Fusion）不直接相加两种不同量纲的分数，而是按每个结果在各路检索中的名次求和：`score(d) = Σ 1 / (60 + rank_i(d))`；同时被两路排到前面的证据通常更靠前。实现在 `src/modules/retrieval.py`。
-
-## 在另一台电脑运行
-
-要求 Python **3.11+**，先用 Git 克隆本仓库：
-
-```bash
-git clone https://github.com/shilaoshitou-ux/rag-knowledge-hub.git
-cd rag-knowledge-hub
-python -m venv .venv
-```
-
-Windows PowerShell：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\start-rag.ps1
-```
-
-Linux / macOS：
-
-```bash
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m streamlit run src/asgi_app.py --server.address=127.0.0.1 --server.port=8507
-```
-
-浏览器访问 `http://localhost:8507/`。首次启动数据库会自动创建；注册自己的账号，在侧栏选择模型服务，填入**你自己的**聊天/向量模型权限对应的 Key。默认服务现为一个 OpenAI 兼容接口；也能选 OpenAI 或自定义兼容 HTTPS 接口；模型目录不保证你的 Key 有权限。公司 Key、用户私有资料和 DPAPI 本机密钥**都不会随 Git 克隆**，换电脑必须重新配置；两台机器的数据库也不会自动同步。公开演示请勿上传敏感材料。
-
-在“我的知识库”创建企业库或论文库，上传文件并等状态变成“处理成功”；到“AI 智能问答”选库和新会话提问。可以先上传 `examples/rag-demo.txt`（明确为**合成**测试资料），再问“项目负责人是谁？”；无可用聊天/向量 Key 时不能伪造模型回答。本地向量化可另外安装 `requirements-local.txt` 并运行 Ollama；问答依然需要聊天模型服务。
 
 ## Docker / 公网演示
 
