@@ -91,6 +91,6 @@ python -m pip check
 - `src/modules/repository.py`：SQLite 权限边界、数据迁移和会话。
 - `tests/`：回归测试；`examples/`：合成测试文件。
 
-## 来源与许可证
+## 开源致谢与许可
 
-本项目在 [yvann-ba/Robby-chatbot](https://github.com/yvann-ba/Robby-chatbot) 基础上渐进改造，保留原项目代码及 [Apache License 2.0](LICENSE) 与归属说明；新功能属于二次开发。发现安全问题请参阅 [SECURITY.md](SECURITY.md)。
+本仓库实现了账号隔离知识库、混合检索与引用、多轮会话、论文分析、效果评测和新版工作区界面。项目保留了 [Robby-chatbot](https://github.com/yvann-ba/Robby-chatbot) 的部分早期功能代码及其 [Apache License 2.0](LICENSE) 许可，感谢原项目作者的开源贡献。安全反馈请参阅 [SECURITY.md](SECURITY.md)。
