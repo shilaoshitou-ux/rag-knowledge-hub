@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Sequence, TypedDict
 
 from langchain_core.documents import Document
@@ -9,8 +10,12 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from .chatbot import Chatbot, ChatResult, overview_search_queries
+from .long_term_memory import recall_memories, remember_user_turn
 from .repository import Repository
 from .retrieval import HybridRetriever
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TurnState(TypedDict, total=False):
@@ -18,6 +23,7 @@ class TurnState(TypedDict, total=False):
     search_query: str
     history: list[tuple[str, str]]
     summary: str
+    memories: list[str]
     search_queries: tuple[str, ...]
     documents: list[Document]
     answer: str
@@ -28,7 +34,8 @@ def make_graph(bot: Chatbot):
     graph = StateGraph(TurnState)
     graph.add_node("rewrite", lambda s: {"search_query": bot.rewrite_question(s["question"], s["history"], s["summary"])})
     graph.add_node("retrieve", lambda s: {"documents": bot.retrieve(s["search_query"], s.get("search_queries", ()))})
-    graph.add_node("answer", lambda s: {"answer": bot.answer(s["question"], s["history"], s["documents"], s["summary"]).answer})
+    graph.add_node("answer", lambda s: {"answer": bot.answer(s["question"], s["history"], s["documents"],
+                                                         s["summary"], memories=s.get("memories", ())).answer})
     graph.add_edge(START, "rewrite")
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("retrieve", "answer")
@@ -96,8 +103,15 @@ def stream_answer_turn(repo: Repository, owner: str, kb: dict, sid: str, questio
     evidence_k = min(12, max(top_k, 10)) if extra_queries and top_k >= 6 else top_k
     retriever = HybridRetriever(repo, owner, kb, api_key, chat_model, mode)
     bot = Chatbot(chat_model, retriever, api_key, evidence_k, base_url=kb["base_url"], history_turns=window)
+    try:
+        memories = recall_memories(repo, owner, kb, question, api_key)
+    except Exception:
+        LOGGER.warning("Personal memory recall failed; continuing without memory", exc_info=False)
+        memories = []
+        if metrics is not None:
+            metrics["memory_recall_error"] = True
     state = {"question": question.strip(), "history": pairs, "summary": summary,
-             "search_queries": extra_queries}
+             "search_queries": extra_queries, "memories": memories}
     documents: list[Document] = []
     answer = None
     streamed = ""
@@ -124,6 +138,14 @@ def stream_answer_turn(repo: Repository, owner: str, kb: dict, sid: str, questio
         repo.replace_last_answer(owner, sid, answer, sources)
     else:
         repo.append_turn(owner, sid, question.strip(), answer, sources)
+        try:
+            saved = remember_user_turn(repo, owner, kb, sid, question.strip(), chat_model, api_key)
+            if metrics is not None:
+                metrics["memories_saved"] = saved
+        except Exception:
+            LOGGER.warning("Personal memory extraction failed; completed answer is still saved", exc_info=False)
+            if metrics is not None:
+                metrics["memory_error"] = True
     if metrics is not None:
         metrics.update({"retrieval_ms": retriever.last_metrics.get("retrieval_ms", 0),
                         "sources": len(sources)})

@@ -57,6 +57,7 @@ class SummaryEvidenceTests(unittest.TestCase):
         repo = MagicMock()
         repo.get_session.return_value = {"kb_id": "kb", "summary": "", "summary_upto": 0}
         repo.list_messages.return_value = []
+        repo.memory_enabled.return_value = False
         kb = {"id": "kb", "kind": "enterprise", "base_url": BASE}
         with patch("src.modules.workflow.HybridRetriever") as retriever, patch("src.modules.workflow.Chatbot") as bot:
             bot.return_value.rewrite_question.side_effect = lambda question, *_: question
@@ -78,6 +79,7 @@ class SummaryEvidenceTests(unittest.TestCase):
         repo = MagicMock()
         repo.get_session.return_value = {"kb_id": "kb", "summary": "", "summary_upto": 0}
         repo.list_messages.return_value = []
+        repo.memory_enabled.return_value = False
         kb = {"id": "kb", "kind": "enterprise", "base_url": BASE}
         documents = [excerpt(1, "合成证据：这里有步骤")]
         updates = [("updates", {"retrieve": {"documents": documents}}),

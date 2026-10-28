@@ -57,7 +57,7 @@ class Repository:
     def migrate(self):
         with self.connection(write=True) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise RuntimeError("数据库版本高于当前程序，请先升级程序，禁止降级写入。")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -106,6 +106,23 @@ class Repository:
                     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS memory_settings (
+                    owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                    PRIMARY KEY(owner_id,kb_id)
+                );
+                CREATE TABLE IF NOT EXISTS personal_memories (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    source_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+                    category TEXT NOT NULL CHECK(category IN ('preference','goal','constraint','fact')),
+                    quote TEXT NOT NULL, content_hash TEXT NOT NULL, importance REAL NOT NULL,
+                    indexed INTEGER NOT NULL DEFAULT 0 CHECK(indexed IN (0,1)),
+                    created_at TEXT NOT NULL, UNIQUE(owner_id,kb_id,content_hash)
+                );
+                CREATE INDEX IF NOT EXISTS memories_scope ON personal_memories(owner_id,kb_id,indexed,created_at);
                 CREATE TABLE IF NOT EXISTS auth_tickets (
                     ticket_hash TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
                     expires_at INTEGER NOT NULL, session_seconds INTEGER NOT NULL
@@ -118,6 +135,8 @@ class Repository:
             """)
             if version < 2:
                 db.execute("PRAGMA user_version=2")
+            if version < 3:
+                db.execute("PRAGMA user_version=3")
             db.execute("PRAGMA journal_mode=WAL")
 
     def register(self, username: str, password: str) -> str:
@@ -314,6 +333,78 @@ class Repository:
         with self.connection(write=True) as db:
             db.execute("UPDATE sessions SET summary=?,summary_upto=? WHERE id=? AND owner_id=?",
                        (summary[:4000], upto, sid, owner))
+    def memory_enabled(self, owner: str, kb_id: str) -> bool:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权访问。")
+        with self.connection() as db:
+            row = db.execute("SELECT enabled FROM memory_settings WHERE owner_id=? AND kb_id=?",
+                             (owner, kb_id)).fetchone()
+        return bool(row and row["enabled"])
+
+    def set_memory_enabled(self, owner: str, kb_id: str, enabled: bool):
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权访问。")
+        with self.connection(write=True) as db:
+            db.execute("""INSERT INTO memory_settings(owner_id,kb_id,enabled) VALUES(?,?,?)
+                ON CONFLICT(owner_id,kb_id) DO UPDATE SET enabled=excluded.enabled""",
+                (owner, kb_id, int(enabled)))
+
+    def list_memories(self, owner: str, kb_id: str) -> list[dict]:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权访问。")
+        with self.connection() as db:
+            rows = db.execute("""SELECT m.* FROM personal_memories m
+                JOIN knowledge_bases k ON k.id=m.kb_id AND k.owner_id=m.owner_id
+                WHERE m.owner_id=? AND m.kb_id=? AND k.deleted_at IS NULL
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 100""", (owner, kb_id)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reserve_memory(self, owner: str, kb_id: str, sid: str | None,
+                       category: str, quote: str, importance: float) -> tuple[str, bool]:
+        if not self.memory_enabled(owner, kb_id):
+            raise PermissionError("请先启用当前知识库的长期记忆。")
+        if sid is not None:
+            session = self.get_session(owner, sid)
+            if not session or session["kb_id"] != kb_id:
+                raise PermissionError("来源会话不存在或与知识库不匹配。")
+        if category not in ("preference", "goal", "constraint", "fact") or not 8 <= len(quote) <= 180:
+            raise ValueError("记忆内容或类型不合法（须为 8–180 字）。")
+        if not 0 <= importance <= 1:
+            raise ValueError("重要性不合法。")
+        digest = hashlib.sha256(quote.strip().casefold().encode("utf-8")).hexdigest()
+        with self.connection(write=True) as db:
+            count = db.execute("SELECT COUNT(*) FROM personal_memories WHERE owner_id=? AND kb_id=?",
+                               (owner, kb_id)).fetchone()[0]
+            existing = db.execute("""SELECT id FROM personal_memories
+                WHERE owner_id=? AND kb_id=? AND content_hash=?""", (owner, kb_id, digest)).fetchone()
+            if existing:
+                return existing["id"], False
+            if count >= 100:
+                raise ValueError("此知识库最多保存 100 条长期记忆。")
+            memory_id = uid()
+            db.execute("""INSERT INTO personal_memories
+                (id,owner_id,kb_id,source_session_id,category,quote,content_hash,importance,indexed,created_at)
+                VALUES(?,?,?,?,?,?,?,?,0,?)""",
+                (memory_id, owner, kb_id, sid, category, quote.strip(), digest, importance, now()))
+        return memory_id, True
+
+    def activate_memory(self, owner: str, kb_id: str, memory_id: str):
+        with self.connection(write=True) as db:
+            result = db.execute("""UPDATE personal_memories SET indexed=1 WHERE id=? AND owner_id=? AND kb_id=?
+                AND EXISTS(SELECT 1 FROM memory_settings WHERE owner_id=? AND kb_id=? AND enabled=1)""",
+                (memory_id, owner, kb_id, owner, kb_id))
+            if not result.rowcount:
+                raise PermissionError("长期记忆已停用或不存在。")
+
+    def delete_memory_record(self, owner: str, kb_id: str, memory_id: str):
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权访问。")
+        with self.connection(write=True) as db:
+            result = db.execute("DELETE FROM personal_memories WHERE id=? AND owner_id=? AND kb_id=?",
+                                (memory_id, owner, kb_id))
+            if not result.rowcount:
+                raise PermissionError("长期记忆不存在或无权删除。")
+
     def create_document(self, owner: str, kb_id: str, name: str, digest: str, size: int,
                         storage_path: str) -> tuple[dict, bool]:
         if not self.get_base(owner, kb_id):
@@ -445,6 +536,8 @@ class Repository:
             db.execute("DELETE FROM chunks WHERE kb_id=?", (kb_id,))
             db.execute("DELETE FROM jobs WHERE document_id IN (SELECT id FROM documents WHERE kb_id=?)", (kb_id,))
             db.execute("DELETE FROM documents WHERE kb_id=?", (kb_id,))
+            db.execute("DELETE FROM personal_memories WHERE kb_id=? AND owner_id=?", (kb_id, owner))
+            db.execute("DELETE FROM memory_settings WHERE kb_id=? AND owner_id=?", (kb_id, owner))
             db.execute("DELETE FROM sessions WHERE kb_id=? AND owner_id=?", (kb_id, owner))
             db.execute("DELETE FROM knowledge_bases WHERE id=? AND owner_id=?", (kb_id, owner))
     def archive_base(self, owner: str, kb_id: str):

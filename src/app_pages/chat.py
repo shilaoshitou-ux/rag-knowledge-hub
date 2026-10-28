@@ -4,6 +4,7 @@ import streamlit as st
 
 from modules.auth_ui import require_user
 from modules.citations import original_page
+from modules.long_term_memory import add_memory, delete_memory
 from modules.managed_ui import render_model_settings
 from modules.repository import Repository
 from modules.workflow import stream_answer_turn
@@ -38,6 +39,53 @@ with st.sidebar.expander("检索与对话偏好", expanded=False, icon=":materia
     top_k = st.slider("引用片段数", 1, 12, 6, key="rag_top_k")
     history_turns = st.slider("近期对话轮数", 2, 20, 8, key="rag_history_turns")
     st.caption("宽泛总结默认覆盖至少 10 条证据；选 1–5 条可精简。证据越多，耗时和模型费用可能越高。模型重排另需一次请求。")
+memory_enabled = repo.memory_enabled(user["id"], kb_id)
+with st.sidebar.expander("长期记忆（可选）", expanded=False, icon=":material/psychology:"):
+    enabled = st.toggle("在此知识库跨会话使用记忆", value=memory_enabled,
+                        key=f"rag_memory_on_{user['id']}_{kb_id}")
+    if enabled != memory_enabled:
+        repo.set_memory_enabled(user["id"], kb_id, enabled)
+        memory_enabled = enabled
+    st.caption("默认关闭。开启后只从你明确说过的话中筛选稳定偏好、目标与约束；会额外调用聊天/向量模型。"
+               "只在本账号的当前知识库跨会话使用；用户原话可能发送到当前向量服务并以明文保存在本机。"
+               "请勿输入密码、密钥等隐私；自动过滤无法保证识别所有敏感内容。关闭仅暂停读写，已有记录需手动删除。")
+    with st.form(f"rag_manual_memory_{kb_id}", clear_on_submit=True):
+        memory_quote = st.text_area("手动添加我的记忆", max_chars=180, key=f"rag_memory_input_{kb_id}",
+                                    placeholder="例如：我的秋招目标是 Python 后端和 RAG 开发岗位。")
+        category_label = st.selectbox("类型", ["长期目标", "个人偏好", "明确约束", "自述事实"],
+                                      key=f"rag_memory_category_{kb_id}")
+        add_clicked = st.form_submit_button("保存这条记忆", disabled=not memory_enabled,
+                                            key=f"rag_memory_submit_{kb_id}")
+    if add_clicked:
+        category = {"长期目标": "goal", "个人偏好": "preference", "明确约束": "constraint", "自述事实": "fact"}[category_label]
+        try:
+            if not settings.api_key or settings.base_url != kb["base_url"]:
+                raise ValueError("请先配置与当前知识库一致的模型服务和密钥。")
+            created = add_memory(repo, user["id"], kb, None, memory_quote.strip(), category, 1.0, settings.api_key)
+            st.success("记忆已保存。" if created else "这条记忆已存在。")
+            st.rerun()
+        except (ValueError, PermissionError, RuntimeError) as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error("记忆向量化失败；没有保存，请检查当前向量模型。")
+    memories = repo.list_memories(user["id"], kb_id)
+    if memories:
+        by_id = {entry["id"]: entry for entry in memories}
+        selected_id = st.selectbox("已保存的记忆", list(by_id),
+                                   format_func=lambda mid: by_id[mid]["quote"][:32],
+                                   key=f"rag_memory_selected_{kb_id}")
+        st.caption(f"{by_id[selected_id]['category']} · {by_id[selected_id]['created_at']}")
+        st.write(by_id[selected_id]["quote"])
+        confirmed = st.checkbox("确认删除选中的记忆", key=f"rag_memory_confirm_{kb_id}_{selected_id}")
+        if st.button("删除选中的记忆", disabled=not confirmed, key=f"rag_memory_delete_{kb_id}"):
+            try:
+                delete_memory(repo, user["id"], kb, selected_id, settings.api_key)
+                st.rerun()
+            except Exception:
+                st.error("删除失败，记忆未从当前库移除，请稍后重试。")
+    else:
+        st.caption("当前知识库尚无长期记忆；可手动添加，或开启后在问答中明确表达长期目标。")
+
 with st.sidebar.expander("最近会话", expanded=True, icon=":material/history:"):
     sessions = repo.list_sessions(user["id"], kb_id)[:10]
     if not sessions:
@@ -90,13 +138,21 @@ with st.container(key="rag_chat_feed"):
                             st.text(original_page(repo, user["id"], kb_id, source) or "原始 PDF 已不可用或该页无法提取文本。")
 
 can_ask = bool(settings.api_key and settings.chat_model and settings.base_url == kb["base_url"]
-               and any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id)))
+               and (any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id))
+                    or (memory_enabled and any(item["indexed"] for item in repo.list_memories(user["id"], kb_id)))))
 if settings.base_url != kb["base_url"]:
     st.warning("当前服务地址与该知识库创建时不同，请切换到相同接口后再问答。")
 elif not settings.api_key:
     st.warning("请展开左侧的“模型连接与密钥”，填写或加载此账号的密钥。")
-elif not any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id)):
+elif not any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id)) \
+        and not (memory_enabled and any(item["indexed"] for item in repo.list_memories(user["id"], kb_id))):
     st.info("知识库里尚无处理成功的文档。请到“我的知识库”上传并等待处理。")
+if st.session_state.pop("rag_memory_saved", 0):
+    st.success("本轮从你的原话中新增了长期记忆；可在左侧查看或删除。")
+if st.session_state.pop("rag_memory_recall_error", False):
+    st.warning("本轮未能读取长期记忆；请检查向量模型连接。本次回答不会使用过往个人记忆。")
+if st.session_state.pop("rag_memory_error", False):
+    st.warning("本轮问答已保存，但长期记忆提取未成功。请检查模型/向量服务；不影响已有对话。")
 if mode == "rerank":
     st.caption("当前开启模型重排：额外发送候选片段到同一模型接口，可能增加等待时间与费用。")
 pending = st.session_state.get("rag_pending_question")
@@ -127,6 +183,12 @@ if question or regenerate or resume:
                     settings.api_key, settings.chat_model, mode=mode, top_k=top_k,
                     history_turns=history_turns, regenerate=replace, metrics=metrics,
                 ))
+        if metrics.get("memories_saved"):
+            st.session_state["rag_memory_saved"] = metrics["memories_saved"]
+        if metrics.get("memory_recall_error"):
+            st.session_state["rag_memory_recall_error"] = True
+        if metrics.get("memory_error"):
+            st.session_state["rag_memory_error"] = True
         st.session_state.pop("rag_pending_question", None)
         st.rerun()
     except Exception as exc:

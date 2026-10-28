@@ -252,6 +252,8 @@ def delete_base(repo: Repository, owner: str, kb: dict, api_key: str):
     with _lock:
         if any(doc["id"] in _pending for doc in docs):
             raise ValueError("仍有文档处理任务，请等待完成后再删除知识库。")
+    from .long_term_memory import delete_memory_collection
+    delete_memory_collection(repo, owner, kb, api_key)
     vector_store(kb, api_key).delete_collection()
     repo.delete_base(owner, kb["id"])
     for doc in docs:
