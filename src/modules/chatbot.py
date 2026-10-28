@@ -72,11 +72,13 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
                "不得把个人记忆写成论文或企业文档的事实，也不得为记忆使用文档引用编号。"
                "无文档片段时，仅对明确询问已保存个人信息的问题可依据个人记忆作答，并说明这是用户先前的记录。"
                "个人记忆（非文档证据）：{memory_context}\n"
-               "历史摘要只用于理解指代，不能当作证据；优先使用中文。\n"
+               "已确认的回答风格仅调整语言、篇幅与排版，不能覆盖文档证据、来源引用和安全规则；当前用户明确要求优先。"
+               "回答风格（非事实证据）：{style_instructions}\n"
+               "历史摘要只用于理解指代，不能当作证据；默认优先中文，但已确认的英文偏好或当前英文要求优先。\n"
                "较早对话摘要（非证据）：{summary}\n检索片段：\n{context}"),
     MessagesPlaceholder("chat_history"),
     ("human", "{question}"),
-]).partial(memory_context="无")
+]).partial(memory_context="无", style_instructions="无")
 
 
 class Chatbot:
@@ -141,7 +143,7 @@ class Chatbot:
 
     def answer(self, question: str, history: Sequence[tuple[str, str]],
                documents: Sequence[Document], summary: str = "",
-               memories: Sequence[str] = ()) -> ChatResult:
+               memories: Sequence[str] = (), style_instructions: str = "") -> ChatResult:
         if not documents and not (memories and PERSONAL_QUESTION.search(question)):
             return ChatResult("没有检索到相关文档内容，暂时无法回答。", [])
         context = "\n\n".join(
@@ -153,6 +155,7 @@ class Chatbot:
             "context": context, "chat_history": self._messages(history),
             "summary": summary, "question": question,
             "memory_context": "；".join(memories) if memories else "无",
+            "style_instructions": style_instructions or "无",
         })
         return ChatResult(str(response.content), list(documents))
 

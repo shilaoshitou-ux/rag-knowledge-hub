@@ -7,6 +7,11 @@ from modules.citations import original_page
 from modules.long_term_memory import add_memory, delete_memory
 from modules.managed_ui import render_model_settings
 from modules.repository import Repository
+from modules.style_profile import (
+    STYLE_OPTIONS, clear_style_data, confirm_style_proposal, get_style_profiles,
+    list_style_proposals, reject_style_proposal, remove_style_profile,
+    set_style_enabled, style_enabled,
+)
 from modules.workflow import stream_answer_turn
 from modules.ui_kit import empty, page_title, section_heading
 
@@ -86,6 +91,52 @@ with st.sidebar.expander("长期记忆（可选）", expanded=False, icon=":mate
     else:
         st.caption("当前知识库尚无长期记忆；可手动添加，或开启后在问答中明确表达长期目标。")
 
+with st.sidebar.expander("回答风格画像（需确认）", expanded=False, icon=":material/tune:"):
+    style_on = style_enabled(repo, user["id"], kb_id)
+    style_toggle = st.toggle("观察明确的回答风格反馈", value=style_on,
+                             key=f"rag_style_on_{user['id']}_{kb_id}")
+    if style_toggle != style_on:
+        set_style_enabled(repo, user["id"], kb_id, style_toggle)
+        style_on = style_toggle
+    st.caption("默认关闭。同一知识库近 30 天内，3 条不同且已完成的用户消息表达同一风格诉求后才提出候选；"
+               "确认前不影响回答。只提取明确反馈，不分析文档，也不额外调用模型。关闭暂停观察与应用，记录仍保留。")
+    if style_on:
+        proposals = list_style_proposals(repo, user["id"], kb_id)
+        if not proposals:
+            st.caption("暂无待确认的风格候选。")
+        for proposal in proposals:
+            label = STYLE_OPTIONS[proposal["dimension"]][proposal["value"]][0]
+            st.markdown(f"**候选：{label}**")
+            st.caption("判断依据（来自你的已完成问答）：")
+            for evidence in proposal["evidence"]:
+                st.text(f"· {evidence['evidence']} · {evidence['created_at'][:10]}")
+            col_yes, col_no = st.columns(2)
+            with col_yes:
+                if st.button("确认应用", key=f"rag_style_accept_{proposal['id']}", width="stretch"):
+                    try:
+                        confirm_style_proposal(repo, user["id"], kb_id, proposal["id"])
+                        st.rerun()
+                    except (PermissionError, ValueError) as exc:
+                        st.error(str(exc))
+            with col_no:
+                if st.button("不采用", key=f"rag_style_reject_{proposal['id']}", width="stretch"):
+                    reject_style_proposal(repo, user["id"], kb_id, proposal["id"])
+                    st.rerun()
+    profiles = get_style_profiles(repo, user["id"], kb_id)
+    st.markdown("**已确认的偏好**" if profiles else "尚未确认任何回答风格。")
+    for profile in profiles:
+        label = STYLE_OPTIONS[profile["dimension"]][profile["value"]][0]
+        col_label, col_delete = st.columns([3, 1], vertical_alignment="center")
+        col_label.write(label)
+        if col_delete.button("移除", key=f"rag_style_remove_{kb_id}_{profile['dimension']}"):
+            remove_style_profile(repo, user["id"], kb_id, profile["dimension"])
+            st.rerun()
+    if profiles or (style_on and list_style_proposals(repo, user["id"], kb_id)):
+        confirm_clear = st.checkbox("确认清空此知识库的风格数据", key=f"rag_style_clear_confirm_{kb_id}")
+        if st.button("清空风格数据", disabled=not confirm_clear, key=f"rag_style_clear_{kb_id}"):
+            clear_style_data(repo, user["id"], kb_id)
+            st.rerun()
+
 with st.sidebar.expander("最近会话", expanded=True, icon=":material/history:"):
     sessions = repo.list_sessions(user["id"], kb_id)[:10]
     if not sessions:
@@ -153,6 +204,10 @@ if st.session_state.pop("rag_memory_recall_error", False):
     st.warning("本轮未能读取长期记忆；请检查向量模型连接。本次回答不会使用过往个人记忆。")
 if st.session_state.pop("rag_memory_error", False):
     st.warning("本轮问答已保存，但长期记忆提取未成功。请检查模型/向量服务；不影响已有对话。")
+if st.session_state.pop("rag_style_proposed", False):
+    st.info("本轮产生新的回答风格候选，请在左侧「回答风格画像」中审阅并确认；候选尚未应用。")
+if st.session_state.pop("rag_style_error", False):
+    st.warning("回答已保存，但本轮风格观察失败；不影响问答内容。")
 if mode == "rerank":
     st.caption("当前开启模型重排：额外发送候选片段到同一模型接口，可能增加等待时间与费用。")
 pending = st.session_state.get("rag_pending_question")
@@ -183,6 +238,10 @@ if question or regenerate or resume:
                     settings.api_key, settings.chat_model, mode=mode, top_k=top_k,
                     history_turns=history_turns, regenerate=replace, metrics=metrics,
                 ))
+        if metrics.get("style_proposals"):
+            st.session_state["rag_style_proposed"] = True
+        if metrics.get("style_error"):
+            st.session_state["rag_style_error"] = True
         if metrics.get("memories_saved"):
             st.session_state["rag_memory_saved"] = metrics["memories_saved"]
         if metrics.get("memory_recall_error"):

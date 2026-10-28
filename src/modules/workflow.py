@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from .chatbot import Chatbot, ChatResult, overview_search_queries
 from .long_term_memory import recall_memories, remember_user_turn
 from .repository import Repository
+from .style_profile import approved_style_instructions, observe_style_turn
 from .retrieval import HybridRetriever
 
 
@@ -24,6 +25,7 @@ class TurnState(TypedDict, total=False):
     history: list[tuple[str, str]]
     summary: str
     memories: list[str]
+    style_instructions: str
     search_queries: tuple[str, ...]
     documents: list[Document]
     answer: str
@@ -35,7 +37,8 @@ def make_graph(bot: Chatbot):
     graph.add_node("rewrite", lambda s: {"search_query": bot.rewrite_question(s["question"], s["history"], s["summary"])})
     graph.add_node("retrieve", lambda s: {"documents": bot.retrieve(s["search_query"], s.get("search_queries", ()))})
     graph.add_node("answer", lambda s: {"answer": bot.answer(s["question"], s["history"], s["documents"],
-                                                         s["summary"], memories=s.get("memories", ())).answer})
+                                                         s["summary"], memories=s.get("memories", ()),
+                                                         style_instructions=s.get("style_instructions", "")).answer})
     graph.add_edge(START, "rewrite")
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("retrieve", "answer")
@@ -111,7 +114,8 @@ def stream_answer_turn(repo: Repository, owner: str, kb: dict, sid: str, questio
         if metrics is not None:
             metrics["memory_recall_error"] = True
     state = {"question": question.strip(), "history": pairs, "summary": summary,
-             "search_queries": extra_queries, "memories": memories}
+             "search_queries": extra_queries, "memories": memories,
+             "style_instructions": approved_style_instructions(repo, owner, kb["id"])}
     documents: list[Document] = []
     answer = None
     streamed = ""
@@ -137,7 +141,15 @@ def stream_answer_turn(repo: Repository, owner: str, kb: dict, sid: str, questio
     if regenerate:
         repo.replace_last_answer(owner, sid, answer, sources)
     else:
-        repo.append_turn(owner, sid, question.strip(), answer, sources)
+        user_message_id = repo.append_turn(owner, sid, question.strip(), answer, sources)
+        try:
+            proposed = observe_style_turn(repo, owner, kb["id"], sid, user_message_id)
+            if metrics is not None:
+                metrics["style_proposals"] = len(proposed)
+        except Exception:
+            LOGGER.warning("Style observation failed; completed answer is still saved", exc_info=False)
+            if metrics is not None:
+                metrics["style_error"] = True
         try:
             saved = remember_user_turn(repo, owner, kb, sid, question.strip(), chat_model, api_key)
             if metrics is not None:
@@ -178,6 +190,7 @@ def answer_turn(repo: Repository, owner: str, kb: dict, sid: str, question: str,
     state = make_graph(bot).invoke({
         "question": question.strip(), "history": pairs, "summary": summary,
         "search_queries": extra_queries,
+        "style_instructions": approved_style_instructions(repo, owner, kb["id"]),
     })
     documents = state["documents"]
     result = ChatResult(state["answer"], documents)
@@ -185,5 +198,9 @@ def answer_turn(repo: Repository, owner: str, kb: dict, sid: str, question: str,
     if regenerate:
         repo.replace_last_answer(owner, sid, result.answer, sources)
     else:
-        repo.append_turn(owner, sid, question.strip(), result.answer, sources)
+        user_message_id = repo.append_turn(owner, sid, question.strip(), result.answer, sources)
+        try:
+            observe_style_turn(repo, owner, kb["id"], sid, user_message_id)
+        except Exception:
+            LOGGER.warning("Style observation failed; completed answer is still saved", exc_info=False)
     return result, {"query": state["search_query"], **retriever.last_metrics}

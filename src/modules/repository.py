@@ -57,7 +57,7 @@ class Repository:
     def migrate(self):
         with self.connection(write=True) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise RuntimeError("数据库版本高于当前程序，请先升级程序，禁止降级写入。")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -123,6 +123,37 @@ class Repository:
                     created_at TEXT NOT NULL, UNIQUE(owner_id,kb_id,content_hash)
                 );
                 CREATE INDEX IF NOT EXISTS memories_scope ON personal_memories(owner_id,kb_id,indexed,created_at);
+                CREATE TABLE IF NOT EXISTS style_settings (
+                    owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                    PRIMARY KEY(owner_id,kb_id)
+                );
+                CREATE TABLE IF NOT EXISTS style_observations (
+                    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                    dimension TEXT NOT NULL, value TEXT NOT NULL,
+                    evidence TEXT NOT NULL, created_at TEXT NOT NULL,
+                    UNIQUE(message_id,dimension)
+                );
+                CREATE INDEX IF NOT EXISTS style_observations_scope
+                    ON style_observations(owner_id,kb_id,dimension,created_at);
+                CREATE TABLE IF NOT EXISTS style_proposals (
+                    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    dimension TEXT NOT NULL, value TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected')),
+                    evidence_json TEXT NOT NULL, last_observation_rowid INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, resolved_at TEXT,
+                    UNIQUE(owner_id,kb_id,dimension)
+                );
+                CREATE TABLE IF NOT EXISTS style_profiles (
+                    owner_id TEXT NOT NULL REFERENCES users(id),
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    dimension TEXT NOT NULL, value TEXT NOT NULL,
+                    confirmed_at TEXT NOT NULL, PRIMARY KEY(owner_id,kb_id,dimension)
+                );
                 CREATE TABLE IF NOT EXISTS auth_tickets (
                     ticket_hash TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id),
                     expires_at INTEGER NOT NULL, session_seconds INTEGER NOT NULL
@@ -137,6 +168,8 @@ class Repository:
                 db.execute("PRAGMA user_version=2")
             if version < 3:
                 db.execute("PRAGMA user_version=3")
+            if version < 4:
+                db.execute("PRAGMA user_version=4")
             db.execute("PRAGMA journal_mode=WAL")
 
     def register(self, username: str, password: str) -> str:
@@ -309,13 +342,15 @@ class Repository:
         if not self.get_session(owner, sid):
             raise PermissionError("会话不存在或无权访问。")
         timestamp = now()
+        user_message_id = uid()
         with self.connection(write=True) as db:
             db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
-                       (uid(), sid, "user", question, "[]", timestamp))
+                       (user_message_id, sid, "user", question, "[]", timestamp))
             db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
                        (uid(), sid, "assistant", answer, json.dumps(sources, ensure_ascii=False), timestamp))
             db.execute("UPDATE sessions SET updated_at=?,title=CASE WHEN title='新会话' THEN ? ELSE title END WHERE id=?",
                        (timestamp, question[:50], sid))
+        return user_message_id
     def list_messages(self, owner: str, sid: str) -> list[dict]:
         if not self.get_session(owner, sid):
             raise PermissionError("会话不存在或无权访问。")
@@ -536,6 +571,10 @@ class Repository:
             db.execute("DELETE FROM chunks WHERE kb_id=?", (kb_id,))
             db.execute("DELETE FROM jobs WHERE document_id IN (SELECT id FROM documents WHERE kb_id=?)", (kb_id,))
             db.execute("DELETE FROM documents WHERE kb_id=?", (kb_id,))
+            db.execute("DELETE FROM style_profiles WHERE kb_id=? AND owner_id=?", (kb_id, owner))
+            db.execute("DELETE FROM style_proposals WHERE kb_id=? AND owner_id=?", (kb_id, owner))
+            db.execute("DELETE FROM style_observations WHERE kb_id=? AND owner_id=?", (kb_id, owner))
+            db.execute("DELETE FROM style_settings WHERE kb_id=? AND owner_id=?", (kb_id, owner))
             db.execute("DELETE FROM personal_memories WHERE kb_id=? AND owner_id=?", (kb_id, owner))
             db.execute("DELETE FROM memory_settings WHERE kb_id=? AND owner_id=?", (kb_id, owner))
             db.execute("DELETE FROM sessions WHERE kb_id=? AND owner_id=?", (kb_id, owner))
