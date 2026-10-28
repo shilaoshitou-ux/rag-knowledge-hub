@@ -35,6 +35,10 @@ class StyleProfileTests(unittest.TestCase):
         self.assertEqual(detect_feedback("不要分点")["layout"][0], "paragraphs")
         self.assertEqual(detect_feedback("请分点回答")["layout"][0], "bullets")
         self.assertEqual(detect_feedback("太短但也太啰嗦"), {})
+        self.assertEqual(detect_feedback("不要用英文回答"), {})
+        self.assertEqual(detect_feedback("别再详细"), {})
+        self.assertEqual(detect_feedback("用英文论文作为材料"), {})
+        self.assertEqual(detect_feedback("请用英文回答")["language"][0], "en")
 
     def test_off_by_default_and_committed_user_only(self):
         mid = self.repo.append_turn(self.owner, self.sid, "回答太短了", "答", [])

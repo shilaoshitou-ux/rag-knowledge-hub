@@ -40,8 +40,8 @@ _FEEDBACK = {
         "table": re.compile(r"(?:用|以|改成)表格(?:展示|回答|列出|呈现|形式)?|整理成表格|表格形式(?:展示|回答)?"),
     },
     "language": {
-        "zh": re.compile(r"(?:请|以后请|以后都|优先)?用中文(?:回答|解释|写|讲)?|回答(?:请)?用中文"),
-        "en": re.compile(r"(?:请|以后请|以后都|优先)?用英文(?:回答|解释|写|讲)?|回答(?:请)?用英文"),
+        "zh": re.compile(r"(?:请|以后请|以后都|优先)?用中文(?:回答|解释|写|讲|作答|$)|回答(?:请)?用中文"),
+        "en": re.compile(r"(?:请|以后请|以后都|优先)?用英文(?:回答|解释|写|讲|作答|$)|回答(?:请)?用英文"),
     },
 }
 
@@ -53,7 +53,9 @@ def detect_feedback(message: str) -> dict[str, tuple[str, str]]:
     result = {}
     for dimension, options in _FEEDBACK.items():
         found = [(value, match.group()) for value, pattern in options.items()
-                 if (match := pattern.search(message))]
+                 if (match := pattern.search(message)) and not (value != "paragraphs" and
+                    re.search(r"(?:别|不要|不用|不必|无需|避免|禁止|不想)(?:再)?$",
+                              message[max(0, match.start()-5):match.start()]))]
         if len(found) == 1:
             result[dimension] = found[0]
     return result
