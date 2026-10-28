@@ -18,7 +18,7 @@ from modules.ui_kit import empty, page_title, section_heading
 repo = Repository()
 user = require_user(repo)
 settings = render_model_settings(user["id"])
-page_title("ASSISTANT / ASK WITH EVIDENCE", "AI 智能问答",
+page_title("对话 / 有据可查", "AI 智能问答",
            "与你的知识库自然对话。回答基于检索证据，并保留可核对的原文出处。")
 bases = repo.list_bases(user["id"])
 if not bases:
@@ -34,8 +34,12 @@ with selector:
                          format_func=lambda value: next(item["name"] for item in bases if item["id"] == value),
                          key="rag_managed_kb")
 kb = repo.get_base(user["id"], kb_id)
+has_documents = any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id))
+memory_enabled = repo.memory_enabled(user["id"], kb_id)
+can_start = has_documents or (memory_enabled and any(mem["indexed"] for mem in repo.list_memories(user["id"], kb_id)))
 with create:
-    if st.button("新建会话", key="managed_new_session", icon=":material/add:", width="stretch", type="primary"):
+    if st.button("新建会话", key="managed_new_session", icon=":material/add:", width="stretch",
+                 type="primary", disabled=not can_start):
         st.session_state["rag_managed_session"] = repo.create_session(user["id"], kb_id)
         st.rerun()
 with st.sidebar.expander("检索与对话偏好", expanded=False, icon=":material/tune:"):
@@ -44,7 +48,6 @@ with st.sidebar.expander("检索与对话偏好", expanded=False, icon=":materia
     top_k = st.slider("引用片段数", 1, 12, 6, key="rag_top_k")
     history_turns = st.slider("近期对话轮数", 2, 20, 8, key="rag_history_turns")
     st.caption("宽泛总结默认覆盖至少 10 条证据；选 1–5 条可精简。证据越多，耗时和模型费用可能越高。模型重排另需一次请求。")
-memory_enabled = repo.memory_enabled(user["id"], kb_id)
 with st.sidebar.expander("长期记忆（可选）", expanded=False, icon=":material/psychology:"):
     enabled = st.toggle("在此知识库跨会话使用记忆", value=memory_enabled,
                         key=f"rag_memory_on_{user['id']}_{kb_id}")
@@ -155,17 +158,27 @@ if (not session or session["kb_id"] != kb_id) and sessions:
     session = repo.get_session(user["id"], sid)
     st.session_state["rag_managed_session"] = sid
 if not session or session["kb_id"] != kb_id:
-    empty("开启一段有据可循的对话", "新建会话开始提问，也可以从左侧继续之前的讨论。")
-    if st.button("开始一段新对话", icon=":material/add:", type="primary"):
-        st.session_state["rag_managed_session"] = repo.create_session(user["id"], kb_id)
-        st.rerun()
+    with st.container(border=True, key="rag_chat_onboarding"):
+        if not can_start:
+            st.subheader("先准备一份可检索资料", anchor=False)
+            st.write("当前知识库还没有处理成功的文档。上传 PDF、Word 或文本，等待处理完成后再回来提问。")
+            st.page_link("app_pages/knowledge.py", label="前往上传资料", icon=":material/upload_file:")
+        else:
+            st.subheader("资料已就绪，可以开始提问", anchor=False)
+            st.write("点击右上角「新建会话」，或者从左侧继续已有的讨论。")
     st.stop()
 
 records = repo.list_messages(user["id"], sid)
-section_heading("当前对话", f"{len(records)} 条消息 · {kb['name']}")
+section_heading("当前对话" if records else "开始提问",
+                f"{len(records)} 条消息 · {kb['name']}" if records else f"当前知识库 · {kb['name']}")
 with st.container(key="rag_chat_feed"):
     if not records:
-        empty("准备好了，问我任何关于当前资料的问题", "你可以提出具体问题，或让助手梳理重点、比较方法、追问细节。")
+        if not can_start:
+            empty("还没有可检索内容", "先完成文档上传与处理，提问入口才会开放。")
+            st.page_link("app_pages/knowledge.py", label="去上传资料", icon=":material/upload_file:")
+        else:
+            empty("从你的资料里找答案", "输入问题，回答会附上可核对的文档来源。")
+            st.caption("试试这样问：总结核心观点 · 作者提出了什么方法？ · 哪一段支持这个结论？")
     for msg in records:
         with st.chat_message(msg["role"], avatar=":material/person:" if msg["role"] == "user" else ":material/smart_toy:"):
             st.markdown(msg["content"])
@@ -189,8 +202,7 @@ with st.container(key="rag_chat_feed"):
                             st.text(original_page(repo, user["id"], kb_id, source) or "原始 PDF 已不可用或该页无法提取文本。")
 
 can_ask = bool(settings.api_key and settings.chat_model and settings.base_url == kb["base_url"]
-               and (any(doc["status"] == "success" for doc in repo.list_documents(user["id"], kb_id))
-                    or (memory_enabled and any(item["indexed"] for item in repo.list_memories(user["id"], kb_id)))))
+               and can_start)
 if settings.base_url != kb["base_url"]:
     st.warning("当前服务地址与该知识库创建时不同，请切换到相同接口后再问答。")
 elif not settings.api_key:

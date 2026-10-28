@@ -6,7 +6,7 @@ import streamlit as st
 
 from modules.auth_ui import require_user
 from modules.repository import Repository
-from modules.ui_kit import empty, feature_intro, hero, metric, section_heading
+from modules.ui_kit import empty, hero, metric, section_heading
 
 repo = Repository()
 user = require_user(repo)
@@ -23,22 +23,45 @@ for column, (label, value, note, icon) in zip(st.columns(3, gap="medium"), stat_
     with column:
         metric(label, value, note, icon)
 
-section_heading("继续你的工作", "选择一个入口，立刻开始")
-features = (
-    ("整理知识", "创建独立空间、上传资料，并掌握每份文件的处理进度。",
-     "folder_open", "app_pages/knowledge.py", "管理知识库"),
-    ("基于证据提问", "检索可信片段，在同一会话中逐步追问并核对来源。",
-     "forum", "app_pages/chat.py", "开始问答"),
-    ("读懂论文", "定位作者方法、关键实验与局限，比较不同论文。",
-     "menu_book", "app_pages/papers.py", "打开论文工作区"),
-)
-for index, (title, detail, icon, target, action) in enumerate(features):
-    if index % 3 == 0:
-        columns = st.columns(3, gap="medium")
-    with columns[index % 3]:
-        with st.container(border=True, key=f"rag_feature_{index}"):
-            feature_intro(title, detail, icon)
-            st.page_link(target, label=action, icon=":material/arrow_outward:", width="stretch")
+bases = repo.list_bases(user["id"])
+ready_base = next((item for item in bases if item["document_count"] > 0), None)
+if not bases:
+    next_title, next_detail, next_label = (
+        "先建一个知识库", "选择企业资料或学术论文库，为接下来上传的资料建立独立空间。", "创建知识库")
+    next_target = None
+elif ready_base is None:
+    next_title, next_detail, next_label = (
+        "上传你的第一份资料", "选中知识库后直接上传 PDF、Word 或文本；处理成功后即可基于原文提问。", "去上传资料")
+    next_target = bases[0]["id"]
+else:
+    next_title, next_detail, next_label = (
+        "从资料里找答案", f"{ready_base['name']} 已有可检索文档，开始提问并核对来源。", "开始问答")
+    next_target = ready_base["id"]
+
+section_heading("继续你的工作", "根据当前资料状态推荐下一步")
+with st.container(border=True, key="rag_next_step"):
+    intro, action = st.columns([4, 1], gap="medium", vertical_alignment="center")
+    with intro:
+        st.caption("建议的下一步 · 来自当前账号的真实数据")
+        st.subheader(next_title, anchor=False)
+        st.write(next_detail)
+    with action:
+        if st.button(next_label, key="rag_next_action", type="primary", width="stretch",
+                     icon=":material/arrow_forward:"):
+            if next_target:
+                st.session_state["rag_managed_kb"] = next_target
+            st.switch_page("app_pages/chat.py" if ready_base else "app_pages/knowledge.py")
+
+with st.container(key="rag_onboarding_steps"):
+    steps = (
+        ("01", "建立知识库", bool(bases)),
+        ("02", "上传并处理", bool(ready_base)),
+        ("03", "开始会话", counts["conversations"] > 0),
+    )
+    for column, (number, label, done) in zip(st.columns(3, gap="small"), steps):
+        with column:
+            st.badge("已完成" if done else "待开始", color="green" if done else "gray")
+            st.markdown(f"**{number} · {label}**")
 
 if counts["uploads"] == 0:
     st.space("small")
@@ -54,7 +77,7 @@ st.space("small")
 recent_bases, recent_sessions = st.columns(2, gap="large")
 with recent_bases:
     section_heading("最近知识库", "RECENT COLLECTIONS")
-    bases = repo.list_bases(user["id"])[:4]
+    bases = bases[:4]
     if not bases:
         empty("还没有知识库", "创建企业库或论文库，随后上传你的第一份资料。")
     for item in bases:

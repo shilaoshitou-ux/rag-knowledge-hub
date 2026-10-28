@@ -7,7 +7,7 @@ from modules.embedder import UploadedDocument
 from modules.managed_index import delete_base, delete_document, interrupted_count, queue_upload, recover_interrupted, retry_document
 from modules.managed_ui import render_model_settings
 from modules.repository import Repository
-from modules.ui_kit import empty, page_title
+from modules.ui_kit import empty, page_title, section_heading
 
 repo = Repository()
 user = require_user(repo)
@@ -37,38 +37,33 @@ with st.expander("创建新知识库", expanded=not bases, icon=":material/add_c
         except ValueError as exc:
             st.error(str(exc))
 
-st.space("small")
-filter_kind = st.segmented_control("按类型查看", ["全部", "企业知识库", "学术论文库"], default="全部")
-shown = [kb for kb in bases if filter_kind == "全部" or
-         kb["kind"] == ("paper" if filter_kind == "学术论文库" else "enterprise")]
-st.caption(f"已找到 {len(shown)} 个知识库 · 企业资料与论文互不混用")
-if not shown:
-    empty("还没有符合条件的知识库", "点开上方“创建新知识库”，开始上传和整理资料。")
-for index, item in enumerate(shown):
-    if index % 2 == 0:
-        row = st.columns(2, gap="medium")
-    with row[index % 2]:
-        with st.container(border=True, key=f"rag_kb_card_{item['id']}"):
-            st.html("<div class='rag-kb-head'><i class='rag-kb-dot paper'></i>论文研究</div>"
-                    if item["kind"] == "paper"
-                    else "<div class='rag-kb-head'><i class='rag-kb-dot'></i>企业知识</div>")
-            st.subheader(item["name"], anchor=False)
-            st.write(item["description"] or "为这组资料建立可检索、可追溯的知识空间。")
-            st.caption(f"{'论文' if item['kind']=='paper' else '企业资料'} · {item['document_count']} 份可检索文档 · 更新于 {item['updated_at'][:10]}")
-            a, b = st.columns(2)
-            if a.button("管理资料", key=f"manage_{item['id']}", icon=":material/folder_open:", width="stretch"):
-                st.session_state["rag_managed_kb"] = item["id"]
-                st.rerun()
-            if b.button("开始问答", key=f"ask_{item['id']}", icon=":material/arrow_forward:", width="stretch"):
-                st.session_state["rag_managed_kb"] = item["id"]
-                st.switch_page("app_pages/chat.py")
-
 active_id = st.session_state.get("rag_managed_kb")
 item = next((kb for kb in bases if kb["id"] == active_id), None)
 if item:
     st.space("small")
     page_title("COLLECTION / 管理资料", item["name"], "在这里上传、更新或删除资料；正在处理的文档会显示实时状态。")
     same_endpoint = settings.base_url == item["base_url"]
+    active_docs = repo.list_documents(user["id"], item["id"])
+    ready = sum(doc["status"] == "success" for doc in active_docs)
+    in_progress = sum(doc["status"] in {"waiting", "processing"} for doc in active_docs)
+    with st.container(border=True, key=f"rag_kb_flow_{item['id']}"):
+        st.caption("从资料到答案 · 当前知识库")
+        steps = (("01", "选择资料", bool(active_docs)),
+                 ("02", "处理完成", ready > 0),
+                 ("03", "开始问答", ready > 0))
+        for column, (number, label, done) in zip(st.columns(3, gap="small"), steps):
+            with column:
+                st.badge(("可开始" if number == "03" else "已就绪") if done else "待完成",
+                         color="blue" if number == "03" and done else ("green" if done else "gray"))
+                st.markdown(f"**{number} · {label}**")
+        if in_progress:
+            st.info(f"{in_progress} 份文档正在等待或处理中。下方状态会自动更新，无需重复提交。")
+        elif ready:
+            st.caption(f"已有 {ready} 份可检索文档。你可以继续上传，也可以开始问答。")
+        else:
+            st.caption("先上传一份 PDF、Word 或文本文件，处理成功后即可提问。")
+    if ready:
+        st.page_link("app_pages/chat.py", label="用此知识库开始问答", icon=":material/arrow_forward:", width="content")
     documents_tab, settings_tab, danger_tab = st.tabs(["资料与处理状态", "知识库设置", "删除知识库"])
     with documents_tab:
         with st.container(border=True):
@@ -122,6 +117,9 @@ if item:
                             "failed": "处理失败", "deleted": "已删除"}
             if not docs:
                 empty("还没有文档", "从上方上传文件，处理成功后即可在当前知识库中问答。")
+            if any(doc["status"] == "success" for doc in docs):
+                st.page_link("app_pages/chat.py", label="处理完成，去问答并核对引用",
+                             icon=":material/arrow_forward:")
             for doc in docs:
                 with st.container(border=True):
                     title, action = st.columns([4, 1], vertical_alignment="center")
@@ -174,3 +172,30 @@ if item:
                     st.rerun()
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
+
+section_heading("浏览知识库", "选择另一组资料或继续管理当前知识库")
+st.space("small")
+filter_kind = st.segmented_control("按类型查看", ["全部", "企业知识库", "学术论文库"], default="全部")
+shown = [kb for kb in bases if filter_kind == "全部" or
+         kb["kind"] == ("paper" if filter_kind == "学术论文库" else "enterprise")]
+st.caption(f"已找到 {len(shown)} 个知识库 · 企业资料与论文互不混用")
+if not shown:
+    empty("还没有符合条件的知识库", "点开上方“创建新知识库”，开始上传和整理资料。")
+for index, item in enumerate(shown):
+    if index % 2 == 0:
+        row = st.columns(2, gap="medium")
+    with row[index % 2]:
+        with st.container(border=True, key=f"rag_kb_card_{item['id']}"):
+            st.html("<div class='rag-kb-head'><i class='rag-kb-dot paper'></i>论文研究</div>"
+                    if item["kind"] == "paper"
+                    else "<div class='rag-kb-head'><i class='rag-kb-dot'></i>企业知识</div>")
+            st.subheader(item["name"], anchor=False)
+            st.write(item["description"] or "为这组资料建立可检索、可追溯的知识空间。")
+            st.caption(f"{'论文' if item['kind']=='paper' else '企业资料'} · {item['document_count']} 份可检索文档 · 更新于 {item['updated_at'][:10]}")
+            a, b = st.columns(2)
+            if a.button("管理资料", key=f"manage_{item['id']}", icon=":material/folder_open:", width="stretch"):
+                st.session_state["rag_managed_kb"] = item["id"]
+                st.rerun()
+            if b.button("开始问答", key=f"ask_{item['id']}", icon=":material/arrow_forward:", width="stretch"):
+                st.session_state["rag_managed_kb"] = item["id"]
+                st.switch_page("app_pages/chat.py")
