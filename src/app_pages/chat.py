@@ -59,8 +59,8 @@ with st.sidebar.expander("长期记忆（可选）", expanded=False, icon=":mate
     if add_clicked:
         category = {"长期目标": "goal", "个人偏好": "preference", "明确约束": "constraint", "自述事实": "fact"}[category_label]
         try:
-            if not settings.api_key or settings.base_url != kb["base_url"]:
-                raise ValueError("请先配置与当前知识库一致的模型服务和密钥。")
+            if settings.base_url != kb["base_url"] or (kb["embedding_provider"] == "company" and not settings.api_key):
+                raise ValueError("请先配置与当前知识库一致的模型服务；在线向量化还需密钥。")
             created = add_memory(repo, user["id"], kb, None, memory_quote.strip(), category, 1.0, settings.api_key)
             st.success("记忆已保存。" if created else "这条记忆已存在。")
             st.rerun()

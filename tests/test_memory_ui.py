@@ -49,6 +49,20 @@ class MemoryPageTests(unittest.TestCase):
         self.assertFalse(self.repo.memory_enabled(self.owner, self.kb_id))
 
 
+    def test_manual_memory_with_local_embeddings_needs_no_online_key(self):
+        with self.repo.connection(write=True) as db:
+            db.execute("UPDATE knowledge_bases SET embedding_provider='ollama' WHERE id=?", (self.kb_id,))
+        self.repo.set_memory_enabled(self.owner, self.kb_id, True)
+        settings = ModelSettings("https://example.invalid/v1", "", "fake", "fake", "ollama")
+        with patch("modules.managed_ui.render_model_settings", return_value=settings), \
+             patch("modules.long_term_memory.memory_store", return_value=MagicMock()):
+            app = AppTest.from_file(str(ROOT / "src" / "Home.py"), default_timeout=20).run()
+            app = app.switch_page("app_pages/chat.py").run()
+            app.get_by_key(f"rag_memory_input_{self.kb_id}").set_value("我希望长期从事 Python 后端开发")
+            app.get_by_key(f"rag_memory_submit_{self.kb_id}").click().run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(len(self.repo.list_memories(self.owner, self.kb_id)), 1)
+
     def test_manual_add_review_and_confirmed_delete(self):
         self.repo.set_memory_enabled(self.owner, self.kb_id, True)
         index = MagicMock()
