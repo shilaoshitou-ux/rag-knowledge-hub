@@ -46,9 +46,16 @@ def _exchange_html(ticket: str) -> str:
       window.location.reload();
     }}).catch(() => {{
       document.getElementById('rag-login-progress').textContent =
-        '无法保存登录状态；请使用下方按钮继续本次登录，并检查服务是否从新版入口启动。';
+        '本次会话已登录，但无法保持登录；请用新版入口启动服务，刷新后可能需要重新登录。';
     }});
     </script>"""
+
+
+def render_pending_login() -> None:
+    """Enter the app after one password check; save the optional cookie in the background."""
+    ticket = st.session_state.pop("rag_login_ticket", None)
+    if ticket and st.session_state.get("rag_current_user"):
+        st.html(_exchange_html(ticket), unsafe_allow_javascript=True)
 
 
 def require_user(repo: Repository) -> dict:
@@ -64,6 +71,7 @@ def require_user(repo: Repository) -> dict:
                     st.session_state.pop("rag_current_user", None)
                     st.session_state.pop("rag_cookie_login", None)
                     st.session_state.pop("rag_managed_session", None)
+                    st.session_state.pop("rag_login_ticket", None)
                     st.rerun()
             return user
         st.session_state.pop("rag_current_user", None)
@@ -100,12 +108,10 @@ def require_user(repo: Repository) -> dict:
                     repo.revoke_login_token(st.context.cookies.get(LOGIN_COOKIE_NAME))
                     st.session_state["rag_current_user"] = user["id"]
                     st.session_state.pop("rag_cookie_login", None)
+                    st.session_state.pop("rag_login_ticket", None)
                     if remember:
-                        ticket = repo.create_login_ticket(user["id"], lifetime_seconds=remember_days() * 86400)
-                        st.html(_exchange_html(ticket), unsafe_allow_javascript=True)
-                        if st.button("只在本次页面登录（无法自动跳转时点击）"):
-                            st.rerun()
-                        st.stop()
+                        st.session_state["rag_login_ticket"] = repo.create_login_ticket(
+                            user["id"], lifetime_seconds=remember_days() * 86400)
                     st.rerun()
                 st.error("用户名或密码不正确。")
         except ValueError as exc:

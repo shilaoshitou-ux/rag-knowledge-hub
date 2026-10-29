@@ -12,7 +12,7 @@ load_dotenv()
 
 st.set_page_config(page_title="Atlas · 智能知识工作区", page_icon=":material/auto_stories:", layout="wide")
 
-from modules.auth_ui import restore_login
+from modules.auth_ui import render_pending_login, restore_login
 from modules.repository import Repository
 
 restore_login(Repository())  # Restore a server-validated cookie before choosing login CSS.
@@ -41,6 +41,7 @@ if st.session_state.get("rag_current_user"):
     st.logo(str(assets / "atlas-logo.svg"), icon_image=str(assets / "atlas-mark.svg"), size="large")
 navigation = st.navigation(pages, expanded=False)
 st.html(GLOBAL_STYLE)
+render_pending_login()
 if not st.session_state.get("rag_current_user"):
     # Login is a dedicated product page; navigation appears after authentication.
     st.html("<style>[data-testid='stSidebar'],[data-testid='stExpandSidebarButton']{display:none!important} [data-testid='stHeader']{display:none!important} [data-testid='stMainBlockContainer']{padding-top:2rem!important}</style>")

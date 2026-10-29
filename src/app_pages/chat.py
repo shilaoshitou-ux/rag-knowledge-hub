@@ -12,7 +12,7 @@ from modules.style_profile import (
     list_style_proposals, reject_style_proposal, remove_style_profile,
     set_style_enabled, style_enabled,
 )
-from modules.workflow import stream_answer_turn
+from modules.workflow import abandon_turn, checkpoint_stage, stream_answer_turn
 from modules.ui_kit import empty, page_title, section_heading
 
 repo = Repository()
@@ -195,6 +195,8 @@ with st.container(key="rag_chat_feed"):
                     selected = min(st.session_state.get(citation_key, 0), len(msg["sources"]) - 1)
                     source = msg["sources"][selected]
                     st.caption(f"第 {selected+1} 条证据 · {source['name']} · {source['location']}")
+                    if source.get("edited") or source.get("location", "").endswith(" · 知识库修订"):
+                        st.info("这条证据是知识库中的人工修订，不代表上传文件原文已更改。")
                     chunk = repo.get_chunk(user["id"], kb_id, source.get("chunk_id")) if source.get("chunk_id") else None
                     st.text(chunk["content"] if chunk else source.get("preview", "原文片段已更新或删除。"))
                     if chunk and source.get("document_id") and source.get("location", "").endswith(" 页"):
@@ -218,26 +220,38 @@ if st.session_state.pop("rag_memory_error", False):
     st.warning("本轮问答已保存，但长期记忆提取未成功。请检查模型/向量服务；不影响已有对话。")
 if st.session_state.pop("rag_style_proposed", False):
     st.info("本轮产生新的回答风格候选，请在左侧「回答风格画像」中审阅并确认；候选尚未应用。")
+if st.session_state.pop("rag_rerank_fallback", False):
+    st.warning("重排模型本轮不可用，已回退到 Hybrid 检索并完成回答；可以检查模型连接后重试。")
 if st.session_state.pop("rag_style_error", False):
     st.warning("回答已保存，但本轮风格观察失败；不影响问答内容。")
 if mode == "rerank":
     st.caption("当前开启模型重排：额外发送候选片段到同一模型接口，可能增加等待时间与费用。")
-pending = st.session_state.get("rag_pending_question")
-matching = bool(pending and pending[:3] == (user["id"], kb_id, sid))
+pending = repo.pending_turn(user["id"], sid)
 resume = False
-if matching:
-    st.warning("上次生成被中断或失败，尚未写入会话。可以重新发送同一个问题。")
-    resume = st.button("重新发送未完成的问题", icon=":material/replay:", disabled=not can_ask)
+if pending:
+    st.warning("这轮问答被中断或失败，但任务已保存在本机。你可以从已完成的节点继续，或放弃后重新提问。")
+    st.caption(f"待恢复问题：{pending['question'][:160]} · {checkpoint_stage(repo, user['id'], sid)}")
+    resume = st.button("从检查点继续", icon=":material/replay:", disabled=not can_ask)
+    if st.button("放弃本轮任务", icon=":material/delete:"):
+        try:
+            abandon_turn(repo, user["id"], sid, pending["id"])
+            st.rerun()
+        except (ValueError, PermissionError, OSError) as exc:
+            st.error(str(exc))
 regenerate = False
 if records and records[-1]["role"] == "assistant":
-    regenerate = st.button("重新生成最后一条回答", icon=":material/refresh:", disabled=not can_ask)
-question = st.chat_input("针对当前知识库提问…", disabled=not can_ask,
+    regenerate = st.button("重新生成最后一条回答", icon=":material/refresh:",
+                           disabled=not can_ask or pending is not None)
+question = st.chat_input("针对当前知识库提问…", disabled=not can_ask or pending is not None,
                          key="rag_managed_question", submit_mode="stop")
 if question or regenerate or resume:
-    asked = pending[3] if resume else (records[-2]["content"] if regenerate else question)
-    replace = pending[4] if resume else regenerate
-    st.session_state["rag_pending_question"] = (user["id"], kb_id, sid, asked, replace)
     try:
+        if not resume:
+            asked = records[-2]["content"] if regenerate else question
+            pending = repo.begin_turn(user["id"], sid, asked, mode, top_k,
+                                      history_turns, settings.chat_model, regenerate=regenerate)
+        asked = pending["question"]
+        replace = bool(pending["regenerate"])
         with st.container(key="rag_stream_reply"):
             if not replace:
                 with st.chat_message("user", avatar=":material/person:"):
@@ -247,9 +261,12 @@ if question or regenerate or resume:
                 metrics = {}
                 st.write_stream(stream_answer_turn(
                     repo, user["id"], kb, sid, asked,
-                    settings.api_key, settings.chat_model, mode=mode, top_k=top_k,
-                    history_turns=history_turns, regenerate=replace, metrics=metrics,
+                    settings.api_key, pending["chat_model"], mode=pending["mode"],
+                    top_k=pending["top_k"], history_turns=pending["history_turns"],
+                    regenerate=replace, metrics=metrics, run_id=pending["id"],
                 ))
+        if metrics.get("rerank_fallback"):
+            st.session_state["rag_rerank_fallback"] = True
         if metrics.get("style_proposals"):
             st.session_state["rag_style_proposed"] = True
         if metrics.get("style_error"):
@@ -260,7 +277,6 @@ if question or regenerate or resume:
             st.session_state["rag_memory_recall_error"] = True
         if metrics.get("memory_error"):
             st.session_state["rag_memory_error"] = True
-        st.session_state.pop("rag_pending_question", None)
         st.rerun()
     except Exception as exc:
         # Gateways may echo private documents or keys in errors.

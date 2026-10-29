@@ -13,13 +13,13 @@
 ## 项目能做什么
 
 - **产品化界面**：深色侧边导航、响应式工作台、按真实数据推荐的下一步、选中知识库优先展示上传区、无文档时明确引导的对话页；仪表数据来自当前账号真实状态。
-- **企业 / 论文知识库**：账号隔离；PDF、DOCX、TXT、Markdown、CSV 上传；处理状态、重试、版本更新和索引删除，最大文件 100 MB。
-- **有出处的问答**：向量语义检索 + BM25、RRF 倒数排名融合、可选 LLM 候选重排，引用原文和 PDF 页码。
-- **多轮对话**：同库会话隔离，近期窗口、较早对话摘要、按需 Query Rewrite；可选的同一知识库跨会话个人记忆，SQLite 持久化、Chroma 独立向量索引。
+- **企业 / 论文知识库**：账号隔离；PDF、DOCX、TXT、Markdown、CSV 上传；处理状态、重试和整篇版本更新。支持按片段修改或删除，无需重传整份文件，最大文件 100 MB。
+- **有出处的问答**：向量语义检索 + BM25、RRF 倒数排名融合、可选 LLM 候选重排；重排失败回退 Hybrid 并提示。引用片段和 PDF 页码，人工修订会单独标记，不伪称 PDF 原文。
+- **多轮对话与中断恢复**：同库会话隔离，近期窗口、较早对话摘要、按需 Query Rewrite；LangGraph SQLite Checkpointer 保存节点状态，刷新/中断后可手动继续。可选同库跨会话个人记忆，SQLite 持久化、Chroma 独立向量索引。
 - **论文分析**：六类预设研读任务，单篇分析与多篇对比；中文提问英文论文时补充英文检索词和论文段落覆盖。
-- **效果评测**：使用自己标注的 JSON 问题集，实际比较纯向量、混合检索和重排模式的文档级 Recall@K、MRR 与耗时。
+- **效果评测与索引运维**：用自己标注的 JSON 题集比较三种检索策略，计算文档级/可选证据片段级 Recall@K、MRR、P50/P95 检索耗时；向量清理失败保留待重试任务，支持手动对账、清理和修复。
 
-**不是通用自主 Agent**：LangGraph 负责“改写 → 检索 → 回答”工作流。没有训练新模型、没有生产级多租户审计、没有 MySQL/Redis/Celery。当前增量输出由 Streamlit 连接承载，并非 HTTP SSE。
+**不是通用自主 Agent**：LangGraph 负责“改写 → 检索 → 回答”固定工作流；并无模型自主选择工具/规划步骤的实现。没有训练新模型、没有生产级多租户审计、没有 MySQL/Redis/Celery。当前增量输出由 Streamlit 连接承载，并非 HTTP SSE。
 
 ## 从零开始使用
 
@@ -78,6 +78,12 @@ python -m venv .venv
 
 > 本图刻意未填测试 Key，因此页面显示「尚未检测到 API 密钥」；这不是一次上传成功的截图。你可以先用仓库里的**合成**文件 [`examples/rag-demo.txt`](examples/rag-demo.txt) 试跑，不要将私人文档提交到仓库。
 
+#### 局部更新 / 删除片段（无需重传整篇）
+
+在「我的知识库」选择已处理成功的文档，展开「编辑知识片段」，选择具体片段后修改或删除。修改时仅为新片段生成向量，再在 SQLite 中切换有效 chunk ID；删除只移除选中的片段，其他片段保持不变。最后一块不能单独删除，应使用「删除文档」。人工编辑**只修改知识库内容，不回写上传的原 PDF/Word/TXT**；修订引用会显示「知识库修订」，有重叠切分时应检查相邻片段。
+
+SQLite 保存当前有效片段，Chroma 保存向量，二者不是一个原子事务。向量删除失败时记录持久化清理任务；「索引健康检查」可按当前库手动扫描多余/缺失向量、重试清理，并在确认向量调用费用后从 SQLite 有效片段修复缺失向量（每次最多 20 条）。正在建索引时禁止对账；这不是后台自动定时巡检。
+
 ### 5. 基于文档提问与核对来源
 
 文档处理成功后，知识库页会提供「去问答」入口；也可以进入「**AI 智能问答**」，选择刚处理成功的知识库，点「**新建会话**」并输入问题。没有可检索文档、也没有已启用且可检索的个人记忆时，问答页会引导先上传，并暂时禁用新建会话。合成示例可问「项目负责人是谁？」。回答生成后展开「**查看引用来源**」，点击引用核对原文、片段和可用的 PDF 页码；历史会话可继续讨论。左侧「检索与对话偏好」可切换纯向量、BM25 + 向量融合或模型重排（重排可能增加调用费用）。
@@ -85,6 +91,10 @@ python -m venv .venv
 ![AI 智能问答：当前知识库尚无处理成功文档时的上传引导](docs/images/chat-workspace.jpg)
 
 > 本图是未配置 Key、未上传文档时的真实空状态，**没有伪造模型回答**。要完成一次真实问答，必须先让文档处理成功，并使用支持问答和向量化的模型服务。
+
+#### 问答中断如何恢复
+
+一次提问由 LangGraph 固定执行「问题改写 → 检索 → 回答」。开始时记录待恢复问题与参数；已完成的节点由 SQLite Checkpointer 保存。刷新、停止或服务重启后，回原会话点击「从检查点继续」，可复用已完成的节点；如果回答节点尚未完成，会重新生成回答，**不是从上次的 token 接着写**。最终答案与待恢复记录在 SQLite 同一事务中提交；若知识库片段已变更，须放弃旧任务重新提问。模型网关是否停止计费不由本应用保证。
 
 #### 让总结回答更完整
 
@@ -109,7 +119,7 @@ python -m venv .venv
 ### 7. 论文分析与效果评测
 
 - **论文智能分析**：先创建「学术论文库」并上传 PDF，处理成功后到「论文智能分析」选择库和论文，可进行单篇精读或 2–5 篇论文对比；结果应结合引用原文复核。
-- **RAG 效果评测**：先处理好文档，再按 [`examples/eval-demo.json`](examples/eval-demo.json) 准备问题集，在「RAG 效果评测」上传 JSON，实际运行三种检索方案并查看 Recall@K、MRR、耗时等指标。合成问题集只是格式示例，不是预先计算好的成绩。
+- **RAG 效果评测**：先处理好文档，再按 [`examples/eval-demo.json`](examples/eval-demo.json) 准备问题集，在「RAG 效果评测」上传 JSON，实际运行三种检索方案并查看 Recall@K、MRR、耗时等指标。合成问题集只是格式示例，不是预先计算好的成绩。评测页可导出当前有效片段 ID 清单，人工为每题标注 `relevant_chunks`，再比较证据级指标；示例 CLI、三份完全虚构的文档与六道题见 [`examples/evaluation/README.md`](examples/evaluation/README.md)。
 
 ### 常见问题
 
@@ -135,7 +145,9 @@ flowchart LR
     Find --> V
     Find --> Repo
     Graph --> LLM[OpenAI 兼容聊天 API]
-    UI --> Eval[真实评测: Recall@K / MRR / 耗时]
+    Graph --> CP[SQLite Checkpointer: 节点恢复]
+    Repo --> Jobs[向量清理任务: 对账 / 手动补偿]
+    UI --> Eval[标注评测: 文档/片段 Recall@K、MRR、P50/P95]
 ```
 
 `RRF`（Reciprocal Rank Fusion）不直接相加两种不同量纲的分数，而是按每个结果在各路检索中的名次求和：`score(d) = Σ 1 / (60 + rank_i(d))`；同时被两路排到前面的证据通常更靠前。实现在 `src/modules/retrieval.py`。
@@ -152,20 +164,24 @@ Docker Compose 将资料保存在独立的 `rag_data` 卷，并只映射本机 `
 
 `examples/eval-demo.json` 仅供学习格式：先把合成资料 `rag-demo.txt` 上传并处理成功，再上传这个问题集。JSON 每项要求 `question` 和已上传**完整文件名**列表 `relevant_documents`，可选 `expected_answer`。页面每轮允许 1–20 道题；结果可下载 JSON。文档级 Recall@K 不足以测量“是否找到方法章节”，这一类问题还应人工核对页码与片段；字符串包含率不等于答案准确率，模型裁判亦不能代替人工标注。本仓库**没有**已发布的大规模正式 Benchmark，也没有虚构的准确率提升数据。
 
+要评估是否**真的检索到了回答所需的段落**，可按 [`examples/evaluation/README.md`](examples/evaluation/README.md) 导出当前库的片段 ID，人工标注每题 `relevant_chunks`；CLI 需要登录本机账号，结果与题集哈希保存在被 Git 忽略的 `data/evaluation/`。文档级指标在只有一份文档时很容易满分；参考答案包含率只是短语命中，语义裁判也不能代替人工评审。Rerank 失败会统计回退次数，不能把回退结果冒充重排效果。**目前没有真实模型实测提升百分比。**
+
 ```bash
 python -m unittest discover -s tests -q
 python -m compileall -q src tests
 python -m pip check
 ```
 
-本轮界面升级后，运行 `python -m unittest discover -s tests -q` 共 **91 项通过**（含真实 SQLite 状态驱动的工作台→上传→问答页面导航测试）。单机测试使用临时库、FakeEmbeddings 和模拟接口；需自行提供合法 Key 才能测试真实网关生成。已知限制：扫描版 PDF 无 OCR；无页面图像高亮；Rerank 是聊天模型排序而非专用 CrossEncoder；异步任务为本机线程池而非分布式队列；尚无公网安全审计、SSO、登录限流。**不建议不加访问控制直接给陌生人开放注册和文档上传。**
+本轮集成后，运行 `python -m unittest discover -s tests -q` 共 **124 项离线测试通过**（含真实 SQLite 状态驱动的工作台→上传→问答页面导航测试）。单机测试使用临时库、FakeEmbeddings 和模拟接口；需自行提供合法 Key 才能测试真实网关生成。已知限制：扫描版 PDF 无 OCR；无页面图像高亮；Rerank 是聊天模型排序而非专用 CrossEncoder；异步任务为本机线程池而非分布式队列；SQLite/Chroma 并非跨库事务，索引对账及补偿需手动触发；尚无公网安全审计、SSO、登录限流。**不建议不加访问控制直接给陌生人开放注册和文档上传。**
 
 ## 目录
 
 - `src/assets/`：品牌 SVG 标识（静态资源）。
 - `src/app_pages/`：工作台、问答、知识库、论文、历史、评测与设置。
+- `src/modules/chunk_edits.py`、`src/modules/vector_cleanup.py`：片段级修订、向量清理与对账补偿。
 - `src/modules/managed_index.py`：上传队列、索引生命周期。
 - `src/modules/retrieval.py`、`src/modules/paper_evidence.py`：融合检索与论文证据覆盖。
+- `scripts/run_rag_eval.py`、`examples/evaluation/`：需本机账号认证的评测 CLI 与合成演示题集。
 - `src/modules/workflow.py`、`src/modules/chatbot.py`：多轮工作流与证据约束生成。
 - `src/modules/repository.py`：SQLite 权限边界、数据迁移和会话。
 - `tests/test_guided_ui.py`：无私有数据的引导、上传与问答界面回归；`examples/`：合成测试文件。

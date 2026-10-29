@@ -21,6 +21,7 @@ DB_PATH = Path(os.getenv("RAG_DB_PATH", str(DATA_DIR / "knowledge.sqlite3"))).re
 LOGIN_COOKIE_NAME = "rag_login_v1"
 
 
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -57,7 +58,7 @@ class Repository:
     def migrate(self):
         with self.connection(write=True) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 4:
+            if version > 6:
                 raise RuntimeError("数据库版本高于当前程序，请先升级程序，禁止降级写入。")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -101,6 +102,23 @@ class Repository:
                     content TEXT NOT NULL, sources_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id,created_at);
+                CREATE TABLE IF NOT EXISTS pending_turns (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL REFERENCES users(id),
+                    session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+                    question TEXT NOT NULL, mode TEXT NOT NULL, top_k INTEGER NOT NULL,
+                    history_turns INTEGER NOT NULL, chat_model TEXT NOT NULL,
+                    regenerate INTEGER NOT NULL CHECK(regenerate IN (0,1)),
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS vector_cleanup_jobs (
+                    kb_id TEXT NOT NULL REFERENCES knowledge_bases(id),
+                    chunk_id TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(kb_id, chunk_id)
+                );
+                CREATE INDEX IF NOT EXISTS vector_cleanup_kb ON vector_cleanup_jobs(kb_id,created_at);
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id),
                     status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
@@ -170,6 +188,10 @@ class Repository:
                 db.execute("PRAGMA user_version=3")
             if version < 4:
                 db.execute("PRAGMA user_version=4")
+            if version < 5:
+                db.execute("PRAGMA user_version=5")
+            if version < 6:
+                db.execute("PRAGMA user_version=6")
             db.execute("PRAGMA journal_mode=WAL")
 
     def register(self, username: str, password: str) -> str:
@@ -351,6 +373,108 @@ class Repository:
             db.execute("UPDATE sessions SET updated_at=?,title=CASE WHEN title='新会话' THEN ? ELSE title END WHERE id=?",
                        (timestamp, question[:50], sid))
         return user_message_id
+    def enqueue_vector_cleanup(self, owner: str, kb_id: str, chunk_ids: list[str]) -> None:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权清理。")
+        with self.connection(write=True) as db:
+            db.executemany("INSERT OR IGNORE INTO vector_cleanup_jobs VALUES (?,?,0,?,?)",
+                           [(kb_id, cid, now(), now()) for cid in set(chunk_ids) if cid])
+
+    def count_vector_cleanup(self, owner: str, kb_id: str) -> int:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权清理。")
+        with self.connection() as db:
+            return db.execute("SELECT COUNT(*) FROM vector_cleanup_jobs WHERE kb_id=?",
+                              (kb_id,)).fetchone()[0]
+
+    def list_vector_cleanup(self, owner: str, kb_id: str, limit: int = 500) -> list[dict]:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权清理。")
+        with self.connection() as db:
+            rows = db.execute("SELECT * FROM vector_cleanup_jobs WHERE kb_id=? "
+                              "ORDER BY created_at LIMIT ?", (kb_id, max(1, min(limit, 5000)))).fetchall()
+        return [dict(row) for row in rows]
+
+    def finish_vector_cleanup(self, owner: str, kb_id: str, chunk_id: str,
+                              *, failed: bool = False) -> None:
+        if not self.get_base(owner, kb_id):
+            raise PermissionError("知识库不存在或无权清理。")
+        with self.connection(write=True) as db:
+            if failed:
+                db.execute("UPDATE vector_cleanup_jobs SET attempts=attempts+1,updated_at=? "
+                           "WHERE kb_id=? AND chunk_id=?", (now(), kb_id, chunk_id))
+            else:
+                db.execute("DELETE FROM vector_cleanup_jobs WHERE kb_id=? AND chunk_id=?",
+                           (kb_id, chunk_id))
+
+    def pending_turn(self, owner: str, sid: str) -> dict | None:
+        if not self.get_session(owner, sid):
+            raise PermissionError("会话不存在或无权访问。")
+        with self.connection() as db:
+            row = db.execute("SELECT * FROM pending_turns WHERE owner_id=? AND session_id=?",
+                             (owner, sid)).fetchone()
+        return dict(row) if row else None
+
+    def begin_turn(self, owner: str, sid: str, question: str, mode: str, top_k: int,
+                   history_turns: int, chat_model: str, *, regenerate: bool = False) -> dict:
+        if not self.get_session(owner, sid):
+            raise PermissionError("会话不存在或无权访问。")
+        if not question.strip() or mode not in {"vector", "hybrid", "rerank"} or not chat_model:
+            raise ValueError("请提供问题、检索模式和模型。")
+        if not 1 <= top_k <= 20 or not 1 <= history_turns <= 20:
+            raise ValueError("检索和历史轮数超出范围。")
+        run_id = uid()
+        with self.connection(write=True) as db:
+            if db.execute("SELECT 1 FROM pending_turns WHERE session_id=?", (sid,)).fetchone():
+                raise ValueError("已有未完成的问答；请先恢复或放弃，再发起新问题。")
+            if regenerate:
+                latest = db.execute("SELECT role,content FROM messages WHERE session_id=? "
+                                    "ORDER BY rowid DESC LIMIT 2", (sid,)).fetchall()
+                if (len(latest) != 2 or latest[0]["role"] != "assistant"
+                        or latest[1]["role"] != "user" or latest[1]["content"] != question.strip()):
+                    raise ValueError("没有可重新生成的最近一轮回答。")
+            db.execute("INSERT INTO pending_turns VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (run_id, owner, sid, question.strip(), mode, top_k,
+                        history_turns, chat_model, int(regenerate), now()))
+        return self.pending_turn(owner, sid)
+
+    def complete_pending_turn(self, owner: str, sid: str, run_id: str,
+                              answer: str, sources: list) -> str | None:
+        """Commit a completed graph turn once; return the user message ID for a new turn."""
+        with self.connection(write=True) as db:
+            row = db.execute("SELECT * FROM pending_turns WHERE id=? AND owner_id=? AND session_id=?",
+                             (run_id, owner, sid)).fetchone()
+            if not row:
+                raise ValueError("任务已完成或被放弃，不能重复写入。")
+            stamp = now()
+            if row["regenerate"]:
+                latest = db.execute("SELECT id,role,content FROM messages WHERE session_id=? "
+                                    "ORDER BY rowid DESC LIMIT 2", (sid,)).fetchall()
+                if (len(latest) != 2 or latest[0]["role"] != "assistant"
+                        or latest[1]["role"] != "user" or latest[1]["content"] != row["question"]):
+                    raise ValueError("最近一轮回答已经变化，无法覆盖。")
+                db.execute("UPDATE messages SET content=?,sources_json=?,created_at=? WHERE id=?",
+                           (answer, json.dumps(sources, ensure_ascii=False), stamp, latest[0]["id"]))
+                message_id = None
+            else:
+                message_id = uid()
+                db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
+                           (message_id, sid, "user", row["question"], "[]", stamp))
+                db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
+                           (uid(), sid, "assistant", answer, json.dumps(sources, ensure_ascii=False), stamp))
+                db.execute("UPDATE sessions SET updated_at=?,title=CASE WHEN title='新会话' THEN ? ELSE title END "
+                           "WHERE id=?", (stamp, row["question"][:50], sid))
+            db.execute("DELETE FROM pending_turns WHERE id=?", (run_id,))
+        return message_id
+
+    def discard_pending_turn(self, owner: str, sid: str, run_id: str) -> None:
+        with self.connection(write=True) as db:
+            row = db.execute("SELECT 1 FROM pending_turns WHERE id=? AND owner_id=? AND session_id=?",
+                             (run_id, owner, sid)).fetchone()
+            if not row:
+                raise PermissionError("待恢复任务不存在或无权放弃。")
+            db.execute("DELETE FROM pending_turns WHERE id=?", (run_id,))
+
     def list_messages(self, owner: str, sid: str) -> list[dict]:
         if not self.get_session(owner, sid):
             raise PermissionError("会话不存在或无权访问。")
@@ -359,6 +483,9 @@ class Repository:
         return [{**dict(r), "sources": json.loads(r["sources_json"])} for r in rows]
 
     def delete_session(self, owner: str, sid: str):
+        if self.get_session(owner, sid):
+            from .workflow import clear_session_checkpoints
+            clear_session_checkpoints(self, owner, [sid])
         with self.connection(write=True) as db:
             db.execute("DELETE FROM sessions WHERE id=? AND owner_id=?", (sid, owner))
 
@@ -544,6 +671,44 @@ class Repository:
                 (chunk_id, kb_id)).fetchone()
         return dict(row) if row else None
 
+    def replace_chunk(self, owner: str, kb_id: str, document_id: str, old_id: str,
+                      new_id: str, content: str, location: str) -> None:
+        """Publish a newly embedded revision only while its original is still active."""
+        with self.connection(write=True) as db:
+            row = db.execute("""SELECT c.id FROM chunks c
+                JOIN documents d ON d.id=c.document_id
+                JOIN knowledge_bases k ON k.id=c.kb_id
+                WHERE c.id=? AND c.kb_id=? AND c.document_id=?
+                AND d.active=1 AND d.status='success' AND k.owner_id=? AND k.deleted_at IS NULL""",
+                (old_id, kb_id, document_id, owner)).fetchone()
+            if not row:
+                raise ValueError("片段已被更新、删除或无权修改，请刷新后重试。")
+            db.execute("UPDATE chunks SET id=?, content=?, location=? WHERE id=?",
+                       (new_id, content, location, old_id))
+            timestamp = now()
+            db.execute("UPDATE documents SET updated_at=? WHERE id=?", (timestamp, document_id))
+            db.execute("UPDATE knowledge_bases SET updated_at=? WHERE id=?", (timestamp, kb_id))
+
+    def remove_chunk(self, owner: str, kb_id: str, document_id: str, chunk_id: str) -> None:
+        """Unpublish one chunk; leave a successful document with at least one chunk."""
+        with self.connection(write=True) as db:
+            row = db.execute("""SELECT c.id FROM chunks c
+                JOIN documents d ON d.id=c.document_id
+                JOIN knowledge_bases k ON k.id=c.kb_id
+                WHERE c.id=? AND c.kb_id=? AND c.document_id=?
+                AND d.active=1 AND d.status='success' AND k.owner_id=? AND k.deleted_at IS NULL""",
+                (chunk_id, kb_id, document_id, owner)).fetchone()
+            if not row:
+                raise ValueError("片段已被更新、删除或无权修改，请刷新后重试。")
+            count = db.execute("SELECT COUNT(*) FROM chunks WHERE document_id=?", (document_id,)).fetchone()[0]
+            if count <= 1:
+                raise ValueError("最后一个片段请使用「删除文档」，避免保留不可检索的空文档。")
+            db.execute("DELETE FROM chunks WHERE id=?", (chunk_id,))
+            timestamp = now()
+            db.execute("UPDATE documents SET chunk_count=chunk_count-1, updated_at=? WHERE id=?",
+                       (timestamp, document_id))
+            db.execute("UPDATE knowledge_bases SET updated_at=? WHERE id=?", (timestamp, kb_id))
+
     def replace_last_answer(self, owner: str, sid: str, answer: str, sources: list):
         if not self.get_session(owner, sid):
             raise PermissionError("会话不存在或无权访问。")
@@ -567,7 +732,10 @@ class Repository:
     def delete_base(self, owner: str, kb_id: str):
         if not self.get_base(owner, kb_id):
             raise PermissionError("知识库不存在或无权删除。")
+        from .workflow import clear_session_checkpoints
+        clear_session_checkpoints(self, owner, [row["id"] for row in self.list_sessions(owner, kb_id)])
         with self.connection(write=True) as db:
+            db.execute("DELETE FROM vector_cleanup_jobs WHERE kb_id=?", (kb_id,))
             db.execute("DELETE FROM chunks WHERE kb_id=?", (kb_id,))
             db.execute("DELETE FROM jobs WHERE document_id IN (SELECT id FROM documents WHERE kb_id=?)", (kb_id,))
             db.execute("DELETE FROM documents WHERE kb_id=?", (kb_id,))

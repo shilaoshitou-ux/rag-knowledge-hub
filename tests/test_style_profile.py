@@ -157,7 +157,7 @@ class StyleProfileTests(unittest.TestCase):
         self.assertEqual(upgraded.list_messages(self.owner, self.sid)[0]["id"], mid)
         self.assertEqual(upgraded.get_base(self.owner, self.kb)["name"], "papers")
         with upgraded.connection() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM style_settings").fetchone()[0], 0)
 
 

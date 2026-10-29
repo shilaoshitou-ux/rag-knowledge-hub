@@ -64,7 +64,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(migrated.get_base(self.alice, self.kb)["name"], "papers")
         self.assertEqual(migrated.authenticate("alice", "strong-password-123")["id"], self.alice)
         with migrated.connection() as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
         ticket = migrated.create_login_ticket(self.alice)
         self.assertIsNotNone(migrated.consume_login_ticket(ticket))
     def test_tenant_isolation_for_bases_sessions_and_messages(self):

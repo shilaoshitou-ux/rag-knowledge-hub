@@ -3,10 +3,12 @@
 import streamlit as st
 
 from modules.auth_ui import require_user
+from modules.chunk_edits import MAX_EDIT_CHARS, REVISION_SUFFIX, delete_chunk, update_chunk
 from modules.embedder import UploadedDocument
 from modules.managed_index import delete_base, delete_document, interrupted_count, queue_upload, recover_interrupted, retry_document
 from modules.managed_ui import render_model_settings
 from modules.repository import Repository
+from modules.vector_cleanup import audit_vectors, repair_missing, retry_cleanup
 from modules.ui_kit import empty, page_title, section_heading
 
 repo = Repository()
@@ -42,6 +44,32 @@ item = next((kb for kb in bases if kb["id"] == active_id), None)
 if item:
     st.space("small")
     page_title("COLLECTION / 管理资料", item["name"], "在这里上传、更新或删除资料；正在处理的文档会显示实时状态。")
+    with st.expander("索引健康检查（仅当前知识库）", icon=":material/health_and_safety:"):
+        queued = repo.count_vector_cleanup(user["id"], item["id"])
+        st.caption(f"待重试清理任务：{queued} 条。检测只比较当前知识库 Chroma 向量 ID 与 SQLite 有效片段 ID，不读取其他账号索引。")
+        ready = item["embedding_provider"] != "company" or bool(settings.api_key and settings.base_url == item["base_url"])
+        if not ready:
+            st.info("请先配置该知识库所属服务的密钥，再检查或清理向量索引。")
+        if st.button("扫描并登记多余向量", key=f"audit_vectors_{item['id']}", disabled=not ready):
+            try:
+                result = audit_vectors(repo, user["id"], item, settings.api_key)
+                st.info(f"当前有效片段 {result['active_chunks']}、向量 {result['vectors']}；已登记多余向量 {result['stale_queued']}，疑似缺失有效向量 {result['missing_active']}。可手动点击下方修复缺失向量；不会凭空生成文档内容。")
+            except Exception as exc:
+                st.error(f"索引对账失败（{type(exc).__name__}）。请检查知识库状态及模型连接。")
+        st.caption("修复缺失片段会重新调用当前库绑定的 Embedding 模型（可能产生费用）；每次最多处理 20 条。")
+        if st.button("修复缺失的有效向量", key=f"repair_vectors_{item['id']}", disabled=not ready):
+            try:
+                result = repair_missing(repo, user["id"], item, settings.api_key)
+                st.success(f"发现缺失 {result['missing']}，已重新向量化 {result['repaired']}；剩余约 {result['remaining_estimate']}。")
+            except Exception as exc:
+                st.error(f"修复中断（{type(exc).__name__}）；已修复的片段保留，可再次点击继续。")
+        if st.button("重试清理已登记的向量", key=f"retry_vectors_{item['id']}",
+                     disabled=not ready or not queued):
+            try:
+                result = retry_cleanup(repo, user["id"], item, settings.api_key)
+                st.success(f"成功清理 {result['deleted']}，失败待重试 {result['failed']}，仍有效未删除 {result['active_skipped']}。")
+            except Exception as exc:
+                st.error(f"清理失败（{type(exc).__name__}），任务仍保留，可稍后重试。")
     same_endpoint = settings.base_url == item["base_url"]
     active_docs = repo.list_documents(user["id"], item["id"])
     ready = sum(doc["status"] == "success" for doc in active_docs)
@@ -143,6 +171,78 @@ if item:
                         except (ValueError, PermissionError) as exc:
                             st.error(str(exc))
         document_status_panel()
+        with st.container(border=True, key=f"rag_chunk_editor_{item['id']}"):
+            st.markdown("#### 编辑知识片段")
+            st.caption("选中片段可直接修改或删除，无需重新上传整份文件；只重新向量化修改的片段。"
+                       "原始 PDF/Word/TXT 文件不会改动，修改后的来源会标记为「知识库修订」。"
+                       "若相邻片段有重叠文字，请一并检查。")
+            notice = st.session_state.pop("rag_chunk_notice", None)
+            if notice and notice[:2] == (user["id"], item["id"]):
+                st.warning(notice[2]) if notice[3] else st.success(notice[2])
+            editable = [doc for doc in repo.list_documents(user["id"], item["id"])
+                        if doc["status"] == "success" and doc["chunk_count"] > 0]
+            if not editable:
+                st.info("目前没有可编辑的片段；请先等待文档处理成功。")
+            else:
+                by_doc = {doc["id"]: doc for doc in editable}
+                selected_doc_id = st.selectbox("选择文档", list(by_doc),
+                    format_func=lambda did: f"{by_doc[did]['name']} · {by_doc[did]['chunk_count']} 个片段",
+                    key=f"rag_chunk_doc_{item['id']}")
+                chunks = [row for row in repo.list_chunks(user["id"], item["id"])
+                          if row["document_id"] == selected_doc_id]
+                if chunks:
+                    by_chunk = {row["id"]: row for row in chunks}
+                    selected_chunk_id = st.selectbox("选择片段", list(by_chunk),
+                        format_func=lambda cid: f"{by_chunk[cid]['location']} · {by_chunk[cid]['content'][:65]}",
+                        key=f"rag_chunk_choice_{selected_doc_id}")
+                    selected_chunk = by_chunk[selected_chunk_id]
+                    st.caption(f"片段 ID：{selected_chunk_id[:16]}… · 来源：{selected_chunk['location']}")
+                    if selected_chunk["location"].endswith(REVISION_SUFFIX):
+                        st.info("这是知识库修订内容，不代表上传文件中的原文已改变。")
+                    with st.form(f"rag_chunk_edit_form_{selected_chunk_id}"):
+                        revised = st.text_area("修改此片段内容", value=selected_chunk["content"],
+                            height=220, key=f"rag_chunk_text_{selected_chunk_id}")
+                        st.caption(f"最多 {MAX_EDIT_CHARS} 字符。更新后片段 ID 会改变，其他片段无需重新上传或向量化。")
+                        save_chunk = st.form_submit_button("保存片段修订", type="primary")
+                    cannot_edit = not same_endpoint or (item["embedding_provider"] == "company" and not settings.api_key)
+                    if save_chunk:
+                        if cannot_edit:
+                            st.error("请先选择创建此知识库时的模型接口，并配置在线向量化密钥。")
+                        else:
+                            try:
+                                _, pending_cleanup = update_chunk(repo, user["id"], item["id"], selected_doc_id,
+                                                                  selected_chunk_id, revised, settings.api_key)
+                                st.session_state["rag_chunk_notice"] = (
+                                    user["id"], item["id"], "片段已更新；请核对相邻重叠片段。" +
+                                    ("旧向量清理失败，但已从检索中排除，请检查服务日志。" if pending_cleanup else ""),
+                                    pending_cleanup)
+                                st.rerun()
+                            except (ValueError, PermissionError, RuntimeError) as exc:
+                                st.error(str(exc))
+                            except Exception as exc:
+                                st.error(f"片段更新失败（{type(exc).__name__}），旧片段未改变。")
+                    st.caption("删除只针对当前知识库片段，不修改原始上传文件或已生成的历史回答。"
+                               "重叠内容可能仍在相邻片段中。")
+                    confirm_chunk = st.checkbox("确认删除选中的片段", key=f"rag_chunk_confirm_{selected_chunk_id}")
+                    if st.button("删除选中的片段", disabled=not confirm_chunk or len(chunks) <= 1,
+                                 key=f"rag_chunk_delete_{selected_chunk_id}"):
+                        if cannot_edit:
+                            st.error("请先选择创建此知识库时的模型接口，并配置在线向量化密钥。")
+                        else:
+                            try:
+                                pending_cleanup = delete_chunk(repo, user["id"], item["id"], selected_doc_id,
+                                                               selected_chunk_id, settings.api_key)
+                                st.session_state["rag_chunk_notice"] = (
+                                    user["id"], item["id"], "片段已从检索中移除；请检查相邻重叠片段。" +
+                                    ("向量清理失败，请检查服务日志。" if pending_cleanup else ""), pending_cleanup)
+                                st.rerun()
+                            except (ValueError, PermissionError) as exc:
+                                st.error(str(exc))
+                            except Exception as exc:
+                                st.error(f"片段删除失败（{type(exc).__name__}），请检查索引服务。")
+                    if len(chunks) == 1:
+                        st.caption("这是文档最后一个片段；如需删除，请使用上方的「删除文档」。")
+
     with settings_tab:
         st.caption(f"向量模型：{item['embedding_model']} · 切分长度：{item['chunk_size']} · 重叠：{item['chunk_overlap']}")
         with st.form(f"edit_kb_{item['id']}"):

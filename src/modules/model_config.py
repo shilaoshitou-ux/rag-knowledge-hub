@@ -1,8 +1,9 @@
 """Model service choices and validation of OpenAI-compatible API endpoints."""
 
+import os
 from urllib.parse import urlsplit
 
-# Default service catalog (public pricing list, 2026-10-22); availability depends on the key.
+# Optional compatible-service catalog; actual model availability depends on your endpoint and key.
 CHAT_MODELS = (
     "gpt-6-sol",
     "gpt-6.1-sol",
@@ -20,7 +21,7 @@ LOCAL_EMBEDDING_MODELS = ("bge-m3", "nomic-embed-text")
 LOCAL_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 CUSTOM_MODEL = "自定义（填写模型 ID）"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
-COMPANY_BASE_URL = "https://llm-proxy.yuwan-game.com/v1"
+COMPANY_BASE_URL = os.getenv("RAG_DEFAULT_BASE_URL", "https://api.openai.com/v1")
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_SERVICE = "默认服务"
 OPENAI_SERVICE = "OpenAI"

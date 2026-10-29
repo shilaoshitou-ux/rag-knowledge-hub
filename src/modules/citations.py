@@ -4,9 +4,12 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from .repository import DATA_DIR, Repository
+from .revision import REVISION_SUFFIX
 
 
 def original_page(repo: Repository, owner: str, kb_id: str, source: dict) -> str | None:
+    if source.get("edited") or str(source.get("location", "")).endswith(REVISION_SUFFIX):
+        return None  # Knowledge-base overlays must never be presented as original PDF text.
     document_id = source.get("document_id")
     doc = repo.get_document(owner, document_id) if document_id else None
     if not doc or doc["kb_id"] != kb_id or not doc["active"] or doc["status"] != "success":

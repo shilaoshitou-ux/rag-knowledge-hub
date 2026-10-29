@@ -8,6 +8,8 @@ from typing import Sequence
 
 from langchain_core.documents import Document
 
+from .revision import REVISION_SUFFIX
+
 
 def paper_intents(question: str) -> tuple[str, ...]:
     """Recognize reading intents; unrelated questions retain normal retrieval."""
@@ -95,6 +97,7 @@ def section_evidence(question: str, rows: Sequence[dict], limit: int) -> list[Do
         selected.append(Document(page_content=row["content"], metadata={
             "source": row["source"], "location": row["location"], "chunk_id": row["id"],
             "document_id": row["document_id"], "version": row["version"],
+            "edited": row["location"].endswith(REVISION_SUFFIX),
         }))
         if len(selected) >= limit:
             break

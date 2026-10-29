@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
@@ -15,6 +16,9 @@ from langchain_openai import ChatOpenAI
 from .managed_index import vector_store
 from .paper_evidence import keyword_query, paper_intents, section_evidence
 from .repository import Repository
+from .revision import REVISION_SUFFIX
+
+LOGGER = logging.getLogger(__name__)
 
 
 def tokens(text: str) -> list[str]:
@@ -46,6 +50,7 @@ def bm25(query: str, records: Sequence[dict], limit: int) -> list[Document]:
     return [Document(page_content=row["content"], metadata={
         "source": row["source"], "location": row["location"], "chunk_id": row["id"],
         "document_id": row["document_id"], "version": row["version"],
+        "edited": row["location"].endswith(REVISION_SUFFIX),
     }) for _, row in scored[:limit]]
 
 
@@ -99,7 +104,7 @@ class HybridRetriever:
         started = time.perf_counter()
         rows = self.repo.list_chunks(self.owner, self.kb["id"], self.document_ids)
         if not rows:
-            self.last_metrics = {"retrieval_ms": 0, "candidate_count": 0, "reranked": False}
+            self.last_metrics = {"retrieval_ms": 0, "candidate_count": 0, "reranked": False, "rerank_fallback": False}
             return []
         allowed = {row["id"] for row in rows}
         try:
@@ -120,12 +125,21 @@ class HybridRetriever:
             candidates = rrf_merge([semantic, keyword], limit=min(max(k*2, 8), 20))
             coverage = (section_evidence(query, rows, min(k, 5))
                         if self.kb["kind"] == "paper" and paper_intents(query) else [])
+            rerank_fallback = False
             if self.mode == "rerank" and candidates:
-                ranked = llm_rerank(query, rrf_merge([coverage, candidates], limit=12),
-                                    self.chat_model, self.api_key, self.kb["base_url"])
-                result = _with_coverage(coverage, ranked, k)
+                try:
+                    ranked = llm_rerank(query, rrf_merge([coverage, candidates], limit=12),
+                                        self.chat_model, self.api_key, self.kb["base_url"])
+                    result = _with_coverage(coverage, ranked, k)
+                except Exception as exc:
+                    # Embedding failures still propagate; only the optional LLM reranker falls back.
+                    LOGGER.warning("Rerank unavailable (%s); returning hybrid results", type(exc).__name__)
+                    rerank_fallback = True
+                    result = _with_coverage(coverage, candidates, k)
             else:
                 result = _with_coverage(coverage, candidates, k)
         self.last_metrics = {"retrieval_ms": round((time.perf_counter()-started)*1000, 1),
-                             "candidate_count": len(semantic), "reranked": self.mode == "rerank"}
+                             "candidate_count": len(semantic),
+                             "reranked": self.mode == "rerank" and bool(candidates) and not rerank_fallback,
+                             "rerank_fallback": self.mode == "rerank" and rerank_fallback}
         return result

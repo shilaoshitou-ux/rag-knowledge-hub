@@ -1,0 +1,44 @@
+[
+  {
+    "question": "年假需要提前多久申请？",
+    "relevant_documents": [
+      "leave-policy.md"
+    ],
+    "expected_answer": "五个工作日"
+  },
+  {
+    "question": "病假由谁审批？",
+    "relevant_documents": [
+      "leave-policy.md"
+    ],
+    "expected_answer": "人事"
+  },
+  {
+    "question": "住宿标准是多少？",
+    "relevant_documents": [
+      "expense-policy.md"
+    ],
+    "expected_answer": "300元"
+  },
+  {
+    "question": "报销差旅住宿需要哪些凭证？",
+    "relevant_documents": [
+      "expense-policy.md"
+    ],
+    "expected_answer": "发票"
+  },
+  {
+    "question": "新员工第一天要做什么？",
+    "relevant_documents": [
+      "onboarding-guide.md"
+    ],
+    "expected_answer": "门禁卡"
+  },
+  {
+    "question": "账号激活失败联系谁？",
+    "relevant_documents": [
+      "onboarding-guide.md"
+    ],
+    "expected_answer": "IT服务台"
+  }
+]

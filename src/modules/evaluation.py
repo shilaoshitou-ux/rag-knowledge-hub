@@ -20,6 +20,7 @@ class EvalCase:
     question: str
     relevant_ids: frozenset[str]
     expected_answer: str = ""
+    relevant_chunk_ids: frozenset[str] = frozenset()
 
 
 def parse_cases(data: bytes, repo: Repository, owner: str, kb_id: str) -> list[EvalCase]:
@@ -35,6 +36,7 @@ def parse_cases(data: bytes, repo: Repository, owner: str, kb_id: str) -> list[E
     docs = [d for d in repo.list_documents(owner, kb_id) if d["status"] == "success"]
     names = {d["name"]: d["id"] for d in docs}
     cases = []
+    active_chunks = None
     for entry in raw:
         if not isinstance(entry, dict):
             raise ValueError("每条问题必须是包含 question 和 relevant_documents 的对象。")
@@ -46,7 +48,20 @@ def parse_cases(data: bytes, repo: Repository, owner: str, kb_id: str) -> list[E
             raise ValueError("问题、相关文档名或参考答案格式错误。")
         if any(name not in names for name in labels):
             raise ValueError("相关文档名与当前库处理成功的文件不一致，请先上传并等待索引完成。")
-        cases.append(EvalCase(question.strip(), frozenset(names[name] for name in labels), expected.strip()))
+        relevant_ids = frozenset(names[name] for name in labels)
+        chunk_labels = entry.get("relevant_chunks")
+        if chunk_labels is not None:
+            if (not isinstance(chunk_labels, list) or not chunk_labels
+                    or any(not isinstance(value, str) or not value for value in chunk_labels)
+                    or len(set(chunk_labels)) != len(chunk_labels)):
+                raise ValueError("相关片段须填写非空、无重复的 chunk ID 列表。")
+            if active_chunks is None:
+                active_chunks = {row["id"]: row for row in repo.list_chunks(owner, kb_id)}
+            if any(cid not in active_chunks or active_chunks[cid]["document_id"] not in relevant_ids
+                   for cid in chunk_labels):
+                raise ValueError("片段 ID 不属于标注的有效文档；更新过文档或片段时请重新标注。")
+        cases.append(EvalCase(question.strip(), relevant_ids, expected.strip(),
+                              frozenset(chunk_labels or ())))
     return cases
 
 
@@ -85,7 +100,10 @@ def evaluate(repo: Repository, owner: str, kb: dict, cases: list[EvalCase],
             started = time.perf_counter()
             retriever = HybridRetriever(repo, owner, kb, api_key, chat_model, mode)
             found = retriever.similarity_search(case.question, k)
+            retrieval_ms = round((time.perf_counter() - started) * 1000, 1)
             ids = [doc.metadata.get("document_id") for doc in found]
+            chunk_ids = [doc.metadata.get("chunk_id") for doc in found]
+            chunk_ranks = [rank for rank, cid in enumerate(chunk_ids, 1) if cid in case.relevant_chunk_ids]
             ranks = [rank for rank, document_id in enumerate(ids, 1) if document_id in case.relevant_ids]
             answer = ""
             exact_match = None
@@ -99,24 +117,61 @@ def evaluate(repo: Repository, owner: str, kb: dict, cases: list[EvalCase],
                 if semantic_judge:
                     semantic_match = judge_answer(case.question, case.expected_answer, answer,
                                                    api_key, chat_model, kb["base_url"])
+            retrieval_metrics = getattr(retriever, "last_metrics", {})
+            retrieval_metrics = retrieval_metrics if isinstance(retrieval_metrics, dict) else {}
             details.append({
                 "question": case.question, "strategy": mode,
+                "rerank_fallback": bool(retrieval_metrics.get("rerank_fallback", False)),
                 "recall_at_k": round(len(set(ids) & case.relevant_ids) / len(case.relevant_ids), 4),
                 "reciprocal_rank": round(1 / min(ranks), 4) if ranks else 0.0,
-                "reference_hit": exact_match, "semantic_match": semantic_match, "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
-                "retrieved_documents": ids, "answer": answer,
+                "evidence_recall_at_k": (round(len(set(chunk_ids) & case.relevant_chunk_ids) /
+                                               len(case.relevant_chunk_ids), 4) if case.relevant_chunk_ids else None),
+                "evidence_reciprocal_rank": ((round(1 / min(chunk_ranks), 4) if chunk_ranks else 0.0)
+                                             if case.relevant_chunk_ids else None),
+                "reference_hit": exact_match, "semantic_match": semantic_match,
+                "retrieval_ms": retrieval_ms,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                "retrieved_documents": ids, "retrieved_chunks": chunk_ids, "answer": answer,
             })
     return details
 
 
 def summarize(details: list[dict]) -> list[dict]:
-    return [{
-        "strategy": mode, "questions": len(rows),
-        "Recall@K": round(sum(row["recall_at_k"] for row in rows) / len(rows), 4),
-        "MRR": round(sum(row["reciprocal_rank"] for row in rows) / len(rows), 4),
-        "参考答案包含率": round(sum(row["reference_hit"] for row in labelled) / len(labelled), 4) if labelled else None,
-        "语义裁判通过率": (round(sum(row["semantic_match"] for row in judged) / len(judged), 4) if judged else None),
-        "平均耗时 ms": round(sum(row["elapsed_ms"] for row in rows) / len(rows), 1),
-    } for mode in MODES if (rows := [row for row in details if row["strategy"] == mode])
-           for labelled in [[row for row in rows if row["reference_hit"] is not None]]
-           for judged in [[row for row in rows if row.get("semantic_match") is not None]]]
+    summaries = []
+    for mode in MODES:
+        rows = [row for row in details if row["strategy"] == mode]
+        if not rows:
+            continue
+        labelled = [row for row in rows if row["reference_hit"] is not None]
+        judged = [row for row in rows if row.get("semantic_match") is not None]
+        evidence = [row for row in rows if row.get("evidence_recall_at_k") is not None]
+        retrieval_latencies = sorted(row.get("retrieval_ms", row["elapsed_ms"]) for row in rows)
+        p50 = retrieval_latencies[(len(rows) - 1) // 2]
+        p95 = retrieval_latencies[max(0, (95 * len(rows) + 99) // 100 - 1)]
+        summaries.append({
+            "strategy": mode, "questions": len(rows),
+            "Rerank 回退次数": sum(bool(row.get("rerank_fallback")) for row in rows),
+            "P50 检索耗时 ms": p50, "P95 检索耗时 ms": p95,
+            "Recall@K": round(sum(row["recall_at_k"] for row in rows) / len(rows), 4),
+            "MRR": round(sum(row["reciprocal_rank"] for row in rows) / len(rows), 4),
+            "证据标注题数": len(evidence),
+            "证据 Recall@K": (round(sum(row["evidence_recall_at_k"] for row in evidence) / len(evidence), 4)
+                             if evidence else None),
+            "证据 MRR": (round(sum(row["evidence_reciprocal_rank"] for row in evidence) / len(evidence), 4)
+                       if evidence else None),
+            "参考答案包含率": (round(sum(row["reference_hit"] for row in labelled) / len(labelled), 4)
+                           if labelled else None),
+            "语义裁判通过率": (round(sum(row["semantic_match"] for row in judged) / len(judged), 4)
+                            if judged else None),
+            "平均检索耗时 ms": round(sum(row.get("retrieval_ms", row["elapsed_ms"]) for row in rows) / len(rows), 1),
+            # Kept for older callers: may also include generation and optional judging.
+            "平均耗时 ms": round(sum(row["elapsed_ms"] for row in rows) / len(rows), 1),
+        })
+    return summaries
+
+
+def chunk_manifest(repo: Repository, owner: str, kb_id: str) -> list[dict]:
+    """Export only current, owner-authorized chunks for manual evidence annotation."""
+    return [{"chunk_id": row["id"], "document": row["source"],
+             "location": row["location"], "preview": row["content"][:160]}
+            for row in repo.list_chunks(owner, kb_id)]

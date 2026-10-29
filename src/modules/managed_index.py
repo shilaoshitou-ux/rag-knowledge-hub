@@ -159,13 +159,17 @@ def _process(database: Path, owner: str, kb_id: str, document_id: str, api_key: 
             try:
                 store.delete(ids=previous_ids)
             except Exception:
-                LOGGER.warning("Old vector cleanup pending for document %s", document_id)
+                from .vector_cleanup import queue_cleanup
+                queue_cleanup(repo, owner, kb_id, previous_ids)
+                LOGGER.warning("Old vector cleanup queued for document %s", document_id)
     except Exception as exc:
         if store and ids_added:
             try:
                 store.delete(ids=ids_added)
             except Exception:
-                LOGGER.warning("Partial vector cleanup pending for document %s", document_id)
+                from .vector_cleanup import queue_cleanup
+                queue_cleanup(repo, owner, kb_id, ids_added)
+                LOGGER.warning("Partial vector cleanup queued for document %s", document_id)
         # Never persist model-service exception bodies; gateways may echo document text or keys.
         status_code = getattr(exc, "status_code", None)
         if isinstance(exc, ValueError) and str(exc).startswith("没有可提取的文本"):
@@ -238,9 +242,15 @@ def delete_document(repo: Repository, owner: str, kb: dict, document_id: str, ap
                for other in repo.list_documents(owner, kb["id"])):
             raise ValueError("此文件有版本正在处理，请完成后再删除。")
     ids = [row["id"] for row in repo.list_chunks(owner, kb["id"]) if row["document_id"] == document_id]
-    if ids:
-        vector_store(kb, api_key).delete(ids=ids)
+    # Publish deletion first: retrieval rejects the old IDs even if physical cleanup fails.
     repo.mark_deleted(owner, document_id)
+    if ids:
+        try:
+            vector_store(kb, api_key).delete(ids=ids)
+        except Exception as exc:
+            from .vector_cleanup import queue_cleanup
+            queue_cleanup(repo, owner, kb["id"], ids)
+            LOGGER.warning("Document vector cleanup queued (%s)", type(exc).__name__)
     path = Path(doc["storage_path"]).resolve()
     if path.is_relative_to((DATA_DIR / "uploads").resolve()):
         path.unlink(missing_ok=True)
@@ -252,6 +262,8 @@ def delete_base(repo: Repository, owner: str, kb: dict, api_key: str):
     with _lock:
         if any(doc["id"] in _pending for doc in docs):
             raise ValueError("仍有文档处理任务，请等待完成后再删除知识库。")
+    if any(repo.pending_turn(owner, session["id"]) for session in repo.list_sessions(owner, kb["id"])):
+        raise ValueError("该知识库仍有待恢复问答；请先继续或放弃任务，再删除知识库。")
     from .long_term_memory import delete_memory_collection
     delete_memory_collection(repo, owner, kb, api_key)
     vector_store(kb, api_key).delete_collection()
