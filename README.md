@@ -48,6 +48,12 @@ Linux / macOS：
 
 打开 <http://localhost:8507/>，**先注册本机账号**，再配置你有权限的聊天模型与在线 Embeddings；也可选本地 Ollama 向量化（需额外安装 [`requirements-local.txt`](requirements-local.txt) 并准备模型）。创建知识库，上传合成示例 [`examples/rag-demo.txt`](examples/rag-demo.txt)，待处理成功后提问「项目负责人是谁？」。真实问答需要可用的模型服务和密钥；GitHub 仓库本身不是在线演示站点。
 
+## 换设备运行与数据迁移
+
+- **只想在新电脑运行：**按上面的 Windows 或 Linux/macOS 命令克隆、安装、启动；macOS 若没有 `python` 命令，可用 `python3 -m venv .venv` 创建环境。首次运行会生成**空数据库（不含原设备的知识库）**，需注册账号，在侧栏重新选择模型服务、聊天模型及 Embedding，并输入自己有权限的密钥；上传示例文档确认能正常问答。
+- **想保留原有知识库：**GitHub 只包含代码，不含账号、上传文件、SQLite/Chroma、评测结果和密钥。先停止旧设备服务，私下备份整个 `data/` 到可信的新设备；数据库可能记录原设备上传文件的**绝对路径**，若目录位置不同，原件读取可能失效，建议重新上传资料并建索引，或先核对迁移路径。不要只复制数据库，也不要把 `data/`、`.env` 或密钥提交到 GitHub。
+- **密钥需要重配：**Windows 的“保存到本机”使用当前 Windows 用户的 DPAPI，换设备/账户不能直接解密旧密钥。Linux/macOS 目前不支持该按钮的持久加密保存；托管账号的密钥可在页面输入并用于当前会话，不能依赖 `RAG_DEFAULT_API_KEY` 自动应用到新账号。
+
 ## 技术链路
 
 ```mermaid
@@ -64,6 +70,6 @@ flowchart LR
 
 ## 验证与更多说明
 
-- 离线回归：`python -m unittest discover -s tests -q`（当前 124 项）；[GitHub Actions](https://github.com/shilaoshitou-ux/rag-knowledge-hub/actions/workflows/ci.yml) 会执行测试、编译和依赖检查。
+- 离线回归：`python -m unittest discover -s tests -q`（当前 126 项）；[GitHub Actions](https://github.com/shilaoshitou-ux/rag-knowledge-hub/actions/workflows/ci.yml) 会执行测试、编译和依赖检查。
 - 标注题集与评测步骤：[`examples/evaluation/README.md`](examples/evaluation/README.md)。部署与安全边界：[DEPLOYMENT.md](DEPLOYMENT.md)、[SECURITY.md](SECURITY.md)。请勿提交 `.env`、真实资料、数据库或密钥。
 - 项目保留了 [Robby-chatbot](https://github.com/yvann-ba/Robby-chatbot) 的部分早期代码及其 [Apache-2.0 许可](LICENSE)，感谢原作者的开源贡献。

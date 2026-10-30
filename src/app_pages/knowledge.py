@@ -39,6 +39,37 @@ with st.expander("创建新知识库", expanded=not bases, icon=":material/add_c
         except ValueError as exc:
             st.error(str(exc))
 
+@st.dialog("永久删除知识库")
+def confirm_delete_base(base: dict) -> None:
+    st.warning(f"即将永久删除「{base['name']}」的文档、向量索引和历史会话；其他知识库不受影响。此操作不能撤销。")
+    st.caption(f"当前包含 {base['document_count']} 份可检索文档。请确认这是要删除的知识库。")
+    if any(doc["status"] in {"waiting", "processing"} for doc in repo.list_documents(user["id"], base["id"])):
+        st.info("如有文档正在处理，请等待完成后再删除。")
+    if any(repo.pending_turn(user["id"], session["id"])
+           for session in repo.list_sessions(user["id"], base["id"])):
+        st.info("此库有未完成的问答，请先在聊天页继续或放弃该任务。")
+    with st.form(f"confirm_delete_base_{base['id']}"):
+        typed_name = st.text_input("输入知识库完整名称确认", placeholder=base["name"])
+        confirmed = st.form_submit_button("确认永久删除", type="primary")
+    if not confirmed:
+        return
+    if typed_name != base["name"]:
+        st.error("名称不一致，未删除。")
+        return
+    try:
+        current = repo.get_base(user["id"], base["id"])
+        if not current or current["name"] != base["name"]:
+            raise ValueError("知识库名称已变更，请关闭窗口后重新确认。")
+        delete_base(repo, user["id"], current, settings.api_key)
+    except (ValueError, PermissionError) as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        st.error(f"删除未完成（{type(exc).__name__}），知识库仍保留。请检查本地索引后重试。")
+    else:
+        st.session_state.pop("rag_managed_kb", None)
+        st.rerun()
+
+
 active_id = st.session_state.get("rag_managed_kb")
 item = next((kb for kb in bases if kb["id"] == active_id), None)
 if item:
@@ -256,22 +287,9 @@ if item:
             except (ValueError, PermissionError) as exc:
                 st.error(str(exc))
     with danger_tab:
-        st.warning("删除后，本库文档、向量与历史会话将永久移除；其他知识库和旧版索引不受影响。")
-        with st.form(f"delete_kb_{item['id']}"):
-            confirm_name = st.text_input("输入知识库完整名称确认")
-            confirmed = st.form_submit_button("永久删除此知识库")
-        if confirmed:
-            if confirm_name != item["name"]:
-                st.error("名称不一致，未删除。")
-            elif not same_endpoint or (item["embedding_provider"] == "company" and not settings.api_key):
-                st.error("请先在侧栏选择该库创建时的接口并填写对应密钥。")
-            else:
-                try:
-                    delete_base(repo, user["id"], item, settings.api_key)
-                    st.session_state.pop("rag_managed_kb", None)
-                    st.rerun()
-                except (ValueError, PermissionError) as exc:
-                    st.error(str(exc))
+        st.warning("删除后，本库文档、向量与历史会话将永久移除；其他知识库不受影响。")
+        if st.button("删除此知识库", key=f"delete_kb_tab_{item['id']}"):
+            confirm_delete_base(item)
 
 section_heading("浏览知识库", "选择另一组资料或继续管理当前知识库")
 st.space("small")
@@ -292,10 +310,12 @@ for index, item in enumerate(shown):
             st.subheader(item["name"], anchor=False)
             st.write(item["description"] or "为这组资料建立可检索、可追溯的知识空间。")
             st.caption(f"{'论文' if item['kind']=='paper' else '企业资料'} · {item['document_count']} 份可检索文档 · 更新于 {item['updated_at'][:10]}")
-            a, b = st.columns(2)
+            a, b, c = st.columns(3)
             if a.button("管理资料", key=f"manage_{item['id']}", icon=":material/folder_open:", width="stretch"):
                 st.session_state["rag_managed_kb"] = item["id"]
                 st.rerun()
             if b.button("开始问答", key=f"ask_{item['id']}", icon=":material/arrow_forward:", width="stretch"):
                 st.session_state["rag_managed_kb"] = item["id"]
                 st.switch_page("app_pages/chat.py")
+            if c.button("删除", key=f"delete_{item['id']}", icon=":material/delete:", width="stretch"):
+                confirm_delete_base(item)

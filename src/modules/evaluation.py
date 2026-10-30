@@ -23,6 +23,34 @@ class EvalCase:
     relevant_chunk_ids: frozenset[str] = frozenset()
 
 
+def check_question_documents(data: bytes, documents: list[dict]) -> tuple[int, list[tuple[str, str]]]:
+    """Check question-set document labels before launching any paid evaluation."""
+    if len(data) > 512_000:
+        raise ValueError("问题集不能超过 500 KB。")
+    try:
+        raw = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("请上传 UTF-8 JSON 数组。") from exc
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
+        raise ValueError("问题集需包含 1–20 条。")
+    names = set()
+    for entry in raw:
+        if not isinstance(entry, dict) or not isinstance(entry.get("relevant_documents"), list):
+            raise ValueError("每道题都需要填写相关文档名列表 relevant_documents。")
+        labels = entry["relevant_documents"]
+        if not labels or any(not isinstance(name, str) or not name for name in labels):
+            raise ValueError("相关文档名不能为空，必须填写完整文件名。")
+        question, expected = entry.get("question"), entry.get("expected_answer", "")
+        if (not isinstance(question, str) or not question.strip() or len(question) > 1000
+                or not isinstance(expected, str) or len(expected) > 500):
+            raise ValueError("每道题都要填写有效的问题；参考答案如有填写，必须是文字。")
+        names.update(labels)
+    status = {doc["name"]: doc["status"] for doc in documents if doc["status"] != "success"}
+    status.update({doc["name"]: "success" for doc in documents if doc["status"] == "success"})
+    return len(raw), [(name, status.get(name, "未上传")) for name in sorted(names)
+                      if status.get(name) != "success"]
+
+
 def parse_cases(data: bytes, repo: Repository, owner: str, kb_id: str) -> list[EvalCase]:
     """Use document names as a portable gold label within the selected KB."""
     if len(data) > 512_000:

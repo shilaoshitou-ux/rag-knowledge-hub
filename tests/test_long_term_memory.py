@@ -172,6 +172,15 @@ class PersonalMemoryTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM personal_memories WHERE kb_id=?", (self.kb,)).fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM memory_settings WHERE kb_id=?", (self.kb,)).fetchone()[0], 0)
 
+    def test_delete_base_without_model_key_keeps_other_bases(self):
+        from src.modules.managed_index import delete_base
+        with patch("src.modules.managed_index.vector_store") as document_index:
+            delete_base(self.repo, self.owner, self.base, "")
+            self.assertEqual(document_index.call_args.args[1], "delete-only")
+            document_index.return_value.delete_collection.assert_called_once()
+        self.assertIsNone(self.repo.get_base(self.owner, self.kb))
+        self.assertIsNotNone(self.repo.get_base(self.owner, self.other_kb))
+
     def test_memory_only_question_can_answer_without_document_sources(self):
         with patch("src.modules.chatbot.ChatOpenAI"):
             bot = Chatbot("fake", MagicMock(), "key", base_url=self.base["base_url"])

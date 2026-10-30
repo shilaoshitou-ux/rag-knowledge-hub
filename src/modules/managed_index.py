@@ -265,8 +265,10 @@ def delete_base(repo: Repository, owner: str, kb: dict, api_key: str):
     if any(repo.pending_turn(owner, session["id"]) for session in repo.list_sessions(owner, kb["id"])):
         raise ValueError("该知识库仍有待恢复问答；请先继续或放弃任务，再删除知识库。")
     from .long_term_memory import delete_memory_collection
-    delete_memory_collection(repo, owner, kb, api_key)
-    vector_store(kb, api_key).delete_collection()
+    # Collection deletion is local and does not embed or call the model service.
+    delete_key = api_key or "delete-only"
+    delete_memory_collection(repo, owner, kb, delete_key)
+    vector_store(kb, delete_key).delete_collection()
     repo.delete_base(owner, kb["id"])
     for doc in docs:
         path = Path(doc["storage_path"]).resolve()

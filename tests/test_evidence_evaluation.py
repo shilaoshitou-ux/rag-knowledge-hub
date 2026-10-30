@@ -39,6 +39,22 @@ class EvidenceEvaluationTests(unittest.TestCase):
         return evaluation.parse_cases(json.dumps([entry]).encode("utf-8"),
                                       self.repo, self.owner, self.kb_id)[0]
 
+    def test_question_set_preflight_explains_missing_and_pending_files(self):
+        data = json.dumps([
+            {"question": "a?", "relevant_documents": ["a.txt", "waiting.md"]},
+            {"question": "b?", "relevant_documents": ["absent.md"]},
+        ]).encode("utf-8")
+        documents = self.repo.list_documents(self.owner, self.kb_id)
+        documents.append({"name": "waiting.md", "status": "waiting"})
+        count, unavailable = evaluation.check_question_documents(data, documents)
+        self.assertEqual(count, 2)
+        self.assertEqual(unavailable, [("absent.md", "未上传"), ("waiting.md", "waiting")])
+        documents.append({"name": "waiting.md", "status": "success"})
+        self.assertEqual(evaluation.check_question_documents(data, documents)[1],
+                         [("absent.md", "未上传")])
+        with self.assertRaises(ValueError):
+            evaluation.check_question_documents(b"not json", documents)
+
     def test_legacy_questions_and_manifest_are_owner_scoped(self):
         case = self._parse({"question": "What?", "relevant_documents": ["a.txt"]})
         self.assertFalse(case.relevant_chunk_ids)
